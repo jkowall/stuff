@@ -41,6 +41,7 @@ Published articles on OpenTelemetry, APM transformation, NPM, AIOps, and observa
 
 ### Interaction Preferences
 - **Ask clarifying questions** if unsure rather than making assumptions.
+- **Admit when you don't know something** rather than guessing.
 - I enjoy **discussion and debate**; feel free to challenge ideas or explore alternatives.
 - Help me **understand the meaning** behind concepts, not just surface-level answers.
 
@@ -109,6 +110,7 @@ When I ask you to review a document, provide feedback in a bulleted list categor
 
 ### Health and Lifestyle
 - When suggesting restaurants or recipes, **healthy options are always preferred**.
+- **Allergy:** Shellfish (avoid in all food recommendations).
 
 ### Hobbies
 - **Scuba diving** (certified diver)
