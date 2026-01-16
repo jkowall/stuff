@@ -26,6 +26,14 @@ The following JSON config files contain **personal/sensitive data** and are excl
 
 **Never hardcode personal data directly in scripts.** Always use the corresponding JSON config file.
 
+### Documentation Files
+
+| File | Purpose |
+|------|--------|
+| `README.md` | User-facing documentation for all scripts |
+| `AGENTS.md` | AI assistant instructions (this file) |
+| `LLM_Instructions.md` | Personal LLM preferences for use across AI services (git-ignored, contains personal data) |
+
 ### Key Scripts
 
 - **`Update-AllPackages.ps1`** - Main package update script, creates timestamped `.log` files
@@ -61,7 +69,23 @@ The following JSON config files contain **personal/sensitive data** and are excl
 1. Check if the script has a corresponding `.json` config file
 2. Never commit personal paths, tokens, or credentials
 3. Update README.md if adding new scripts or config requirements
-4. Log files (`.log`) are auto-generated and git-ignored
+4. Update AGENTS.md file structure if adding new files
+5. Log files (`.log`) are auto-generated and git-ignored
+
+## Git Practices
+
+### Commit Signing
+
+**All commits must be signed.** Use GPG or SSH signing:
+
+```bash
+git commit -S -m "commit message"
+```
+
+Or configure automatic signing:
+```bash
+git config commit.gpgsign true
+```
 
 ## File Structure
 
@@ -70,6 +94,7 @@ The following JSON config files contain **personal/sensitive data** and are excl
 ├── .gitignore                    # Excludes .log and config files
 ├── README.md                     # User documentation
 ├── AGENTS.md                     # This file (AI instructions)
+├── LLM_Instructions.md           # Personal LLM preferences (git-ignored)
 ├── LICENSE                       # License file
 │
 ├── # Backup Scripts

@@ -2,6 +2,14 @@
 
 A collection of PowerShell and shell scripts for system automation, backup, and media management.
 
+## Documentation
+
+| File | Description |
+|------|-------------|
+| [`README.md`](README.md) | This file; documents all scripts and configuration |
+| [`AGENTS.md`](AGENTS.md) | Instructions for AI coding assistants working with this repo |
+| [`LLM_Instructions.md`](LLM_Instructions.md) | Personal LLM preferences for use across AI services (not tracked in Git) |
+
 ## Scripts
 
 ### Backup & Sync
