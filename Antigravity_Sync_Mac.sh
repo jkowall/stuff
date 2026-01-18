@@ -11,8 +11,58 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 fi
 DEFAULT_BACKUP_PATH=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['DefaultBackupPath'])")
 
-echo "Choose Action: (1) Backup (2) Restore"
-read choice
+# Function to display interactive menu
+show_menu() {
+    local title=$1
+    shift
+    local options=("$@")
+    local selected=0
+    local key
+
+    # Enable raw terminal mode
+    stty -echo
+    tput civis # Hide cursor
+
+    while true; do
+        clear
+        echo "=== $title ==="
+        for i in {0..$((${#options[@]} - 1))}; do
+            if [[ $i -eq $selected ]]; then
+                echo -e "\033[32m > ${options[$i]}\033[0m"
+            else
+                echo "   ${options[$i]}"
+            fi
+        done
+
+        # Read key (handling escape sequences for arrows)
+        read -s -n3 key
+        case "$key" in
+            $'\e[A') # Up Arrow
+                selected=$(( (selected - 1 + ${#options[@]}) % ${#options[@]} ))
+                ;;
+            $'\e[B') # Down Arrow
+                selected=$(( (selected + 1) % ${#options[@]} ))
+                ;;
+            "") # Enter (empty string because -n3 reads escape seq, Enter is just \n)
+                break
+                ;;
+            $'\e') # Escape (might be part of escape sequence or standalone)
+                # If we read only \e, it's just ESC. But read -n3 might have swallowed more.
+                # For simplicity, we just use Enter to select.
+                ;;
+        esac
+    done
+
+    # Restore terminal
+    stty echo
+    tput cnorm # Show cursor
+    return $selected
+}
+
+# Determine Action
+show_menu "Select Action" "Backup" "Restore"
+choice_idx=$?
+choice=$((choice_idx + 1))
 
 echo "Enter the full path for the backup folder (default: $DEFAULT_BACKUP_PATH):"
 read input_dir

@@ -25,7 +25,7 @@
 
 [CmdletBinding(SupportsShouldProcess = $true)]
 param (
-    [Parameter(Mandatory = $true, Position = 0)]
+    [Parameter(Mandatory = $false, Position = 0)]
     [ValidateSet("backup", "restore")]
     [string]$Action,
 
@@ -111,6 +111,48 @@ function Get-WSLConfig {
         return $null
     }
 }
+
+function Get-MenuChoice {
+    param(
+        [string]$Title = "Select Action:",
+        [string[]]$Options = @("Backup", "Restore")
+    )
+    $selectedIndex = 0
+    $hostRaw = $Host.UI.RawUI
+    $origColor = $hostRaw.ForegroundColor
+    
+    while ($true) {
+        Clear-Host
+        Write-Host "=== $Title ===" -ForegroundColor Cyan
+        for ($i = 0; $i -lt $Options.Count; $i++) {
+            if ($i -eq $selectedIndex) {
+                Write-Host " > $($Options[$i])" -ForegroundColor Green
+            }
+            else {
+                Write-Host "   $($Options[$i])"
+            }
+        }
+        
+        $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        if ($key.VirtualKeyCode -eq 38) {
+            # Up Arrow
+            $selectedIndex = ($selectedIndex - 1 + $Options.Count) % $Options.Count
+        }
+        elseif ($key.VirtualKeyCode -eq 40) {
+            # Down Arrow
+            $selectedIndex = ($selectedIndex + 1) % $Options.Count
+        }
+        elseif ($key.VirtualKeyCode -eq 13) {
+            # Enter
+            return $Options[$selectedIndex].ToLower()
+        }
+        elseif ($key.VirtualKeyCode -eq 27) {
+            # Esc
+            exit 0
+        }
+    }
+}
+
 #endregion
 
 #region Helpers
@@ -241,6 +283,10 @@ function Invoke-Sync {
 }
 
 try {
+    if (-not $Action) {
+        $Action = Get-MenuChoice
+    }
+
     Write-Log "=== Antigravity Sync Started ==="
     $machineName = $env:COMPUTERNAME
     $timestamp = Get-Date -Format "yyyy-MM-dd_HHmmss"
