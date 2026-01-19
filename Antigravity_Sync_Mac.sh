@@ -16,7 +16,8 @@ show_menu() {
     local title=$1
     shift
     local options=("$@")
-    local selected=0
+    local count=${#options[@]}
+    local selected=1  # zsh arrays are 1-indexed
     local key
 
     # Enable raw terminal mode
@@ -26,29 +27,32 @@ show_menu() {
     while true; do
         clear
         echo "=== $title ==="
-        for i in {0..$((${#options[@]} - 1))}; do
+        # zsh arrays are 1-indexed, so loop from 1 to count
+        for i in {1..$count}; do
             if [[ $i -eq $selected ]]; then
-                echo -e "\033[32m > ${options[$i]}\033[0m"
+                echo "\033[32m > ${options[$i]}\033[0m"
             else
                 echo "   ${options[$i]}"
             fi
         done
 
-        # Read key (handling escape sequences for arrows)
-        read -s -n3 key
+        # Read a single character first
+        read -s -k1 key
+        if [[ "$key" == $'\e' ]]; then
+            # Read the rest of the escape sequence
+            read -s -k2 -t 0.1 rest
+            key="$key$rest"
+        fi
+        
         case "$key" in
             $'\e[A') # Up Arrow
-                selected=$(( (selected - 1 + ${#options[@]}) % ${#options[@]} ))
+                selected=$(( (selected - 2 + count) % count + 1 ))
                 ;;
             $'\e[B') # Down Arrow
-                selected=$(( (selected + 1) % ${#options[@]} ))
+                selected=$(( selected % count + 1 ))
                 ;;
-            "") # Enter (empty string because -n3 reads escape seq, Enter is just \n)
+            $'\n'|"") # Enter key
                 break
-                ;;
-            $'\e') # Escape (might be part of escape sequence or standalone)
-                # If we read only \e, it's just ESC. But read -n3 might have swallowed more.
-                # For simplicity, we just use Enter to select.
                 ;;
         esac
     done
@@ -56,7 +60,7 @@ show_menu() {
     # Restore terminal
     stty echo
     tput cnorm # Show cursor
-    return $selected
+    return $((selected - 1))  # Return 0-indexed for compatibility with rest of script
 }
 
 # Determine Action
@@ -109,8 +113,13 @@ elif [[ $choice -eq 2 ]]; then
         echo "Found extensions.txt. Reinstall all extensions? (y/n)"
         read install_choice
         if [[ $install_choice == "y" ]]; then
+            echo "Installing/updating extensions..."
             # Use tr to remove carriage returns (\r) in case the file came from Windows
-            tr -d '\r' < "$EXT_FILE" | xargs -L 1 antigravity --install-extension
+            # Use --force to update to latest versions, suppress stderr noise from internal messages
+            tr -d '\r' < "$EXT_FILE" | while read -r ext; do
+                echo "  Installing: $ext"
+                antigravity --install-extension "$ext" --force 2>/dev/null
+            done
         fi
     fi
     echo "Restore complete."
