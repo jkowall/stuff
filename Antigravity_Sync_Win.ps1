@@ -367,12 +367,12 @@ try {
     if ($Versioned) { $subFolder = "${machineName}_${timestamp}" } else { $subFolder = $machineName }
     $backupRoot = Join-Path $Script:Config.BaseBackupPath $subFolder
     
-    if ($Action -eq "restore") {
-        # Prompt for Git Pull
-        if ($Force -or (Read-Host "Pull latest settings from Git? (y/n)") -eq 'y') {
-            Invoke-GitSync -Path $Script:Config.BaseBackupPath -Action pull
-        }
+    # Pull latest settings from Git at the start of the script
+    if ($Force -or (Read-Host "Pull latest settings from Git? (y/n)") -eq 'y') {
+        Invoke-GitSync -Path $Script:Config.BaseBackupPath -Action pull
+    }
 
+    if ($Action -eq "restore") {
         # Select version if multiple exist
         $backups = Get-ChildItem $Script:Config.BaseBackupPath -Directory | Sort-Object Name -Descending
         if ($backups.Count -gt 1 -and !$Force) {

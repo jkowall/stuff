@@ -98,6 +98,14 @@ MAC_SETTINGS="$HOME/Library/Application Support/Antigravity/User"
 GLOBAL_RULES="$HOME/.gemini"
 EXT_FILE="$BACKUP_DIR/extensions.txt"
 
+# Git Pull at Start
+echo -n "Pull latest settings from Git? (y/n): "
+read -n 1 -r pull_choice
+echo
+if [[ $pull_choice == "y" || $pull_choice == "Y" ]]; then
+    git_sync_pull "$BACKUP_DIR"
+fi
+
 if [[ $choice -eq 1 ]]; then
     echo "Starting Backup..."
     mkdir -p "$BACKUP_DIR"
@@ -118,13 +126,6 @@ if [[ $choice -eq 1 ]]; then
     fi
 
 elif [[ $choice -eq 2 ]]; then
-    # Git Pull
-    echo -n "Pull latest settings from Git? (y/n): "
-    read pull_choice
-    if [[ $pull_choice == "y" || $pull_choice == "Y" ]]; then
-        git_sync_pull "$BACKUP_DIR"
-    fi
-
     echo "Starting Restore..."
     if [[ -f "$BACKUP_DIR/settings.json" ]]; then
         cp "$BACKUP_DIR/settings.json" "$MAC_SETTINGS/"

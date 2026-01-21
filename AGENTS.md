@@ -13,18 +13,19 @@ This is a personal scripts collection containing PowerShell (.ps1) and shell (.s
 
 ## Important Files
 
-### Configuration Files (Git-Ignored)
+### Configuration Management
 
-The following JSON config files contain **personal/sensitive data** and are excluded from version control:
+All sensitive JSON config files are now stored in a dedicated **Private repository** at `~/Private/Configs` (Unix) or `C:\Users\jkowa\Private\Configs` (Windows). 
 
 | File | Contains |
 |------|----------|
 | `Update-CloudflareDNS.json` | Cloudflare API token, Zone ID, domain name |
 | `Antigravity_Sync_Win.json` | Personal backup directory path |
 | `Antigravity_Sync_Mac.json` | Personal backup directory path |
+| `Antigravity_Sync_Linux.json` | Personal backup directory path |
 | `plex_backup.json` | Local paths for Plex data, backups, and tools |
 
-**Never hardcode personal data directly in scripts.** Always use the corresponding JSON config file.
+**Never hardcode personal data directly in scripts.** Always ensure scripts point to the centralized location in the `Private` repository.
 
 ### Documentation Files
 
@@ -97,9 +98,10 @@ git config commit.gpgsign true
 ├── LLM_Instructions.md           # Personal LLM preferences (git-ignored)
 ├── LICENSE                       # License file
 │
-├── # Backup Scripts
-├── Antigravity_Sync_Win.ps1      # Windows Antigravity backup
-├── Antigravity_Sync_Mac.sh       # macOS Antigravity backup
+├── # Backup & Sync
+├── Antigravity_Sync_Win.ps1      # Windows Antigravity sync (Git-integrated)
+├── Antigravity_Sync_Mac.sh       # macOS Antigravity sync (Git-integrated)
+├── Antigravity_Sync_Linux.sh     # Linux Antigravity sync (Git-integrated)
 ├── plex_backup.ps1               # Plex Media Server backup
 │
 ├── # System Maintenance

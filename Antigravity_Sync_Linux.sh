@@ -11,7 +11,10 @@ fi
 
 # Parse path using python3 and expand tilde
 RAW_PATH=$(python3 -c "import json, os; print(os.path.expanduser(json.load(open('$CONFIG_FILE'))['DefaultBackupPath']))")
-BACKUP_DIR_DEFAULT="$RAW_PATH"
+BASE_BACKUP_DIR="$RAW_PATH"
+# Use hostname for subfolder to match Windows behavior
+HOSTNAME=$(hostname)
+BACKUP_DIR_DEFAULT="$BASE_BACKUP_DIR/$HOSTNAME"
 
 # Function to display interactive menu (Bash compatible)
 show_menu() {
@@ -68,41 +71,67 @@ show_menu() {
 git_sync_pull() {
     local target_dir=$1
     echo "Checking for remote updates in $target_dir..."
-    # Find the git root for the backup directory
-    local repo_root=$(cd "$target_dir" && git rev-parse --show-toplevel 2>/dev/null)
+    # Find the git root for the base backup directory
+    local repo_root=$(cd "$BASE_BACKUP_DIR" && git rev-parse --show-toplevel 2>/dev/null)
     if [[ -n "$repo_root" ]]; then
         (cd "$repo_root" && git pull)
     else
-        echo "Warning: Backup directory is not inside a git repository."
+        echo "Warning: Base backup directory is not inside a git repository."
     fi
 }
 
 git_sync_push() {
     local target_dir=$1
     echo "Syncing backup to remote..."
-    local repo_root=$(cd "$target_dir" && git rev-parse --show-toplevel 2>/dev/null)
+    local repo_root=$(cd "$BASE_BACKUP_DIR" && git rev-parse --show-toplevel 2>/dev/null)
     if [[ -n "$repo_root" ]]; then
-        (cd "$repo_root" && git add . && git commit -m "Auto-backup Antigravity settings: $(date)" && git push)
+        (cd "$repo_root" && git add . && git commit -m "Auto-backup Antigravity settings ($HOSTNAME): $(date)" && git push)
     else
-        echo "Warning: Backup directory is not inside a git repository."
+        echo "Warning: Base backup directory is not inside a git repository."
     fi
 }
+
+# Git Pull at Start
+echo -n "Pull latest settings from Git? (y/n): "
+read -n 1 -r pull_choice
+echo
+if [[ $pull_choice == "y" || $pull_choice == "Y" ]]; then
+    git_sync_pull
+fi
 
 # Determine Action
 show_menu "Select Action" "Backup" "Restore"
 choice_idx=$?
 choice=$((choice_idx + 1))
 
-echo "Enter the full path for the backup folder (default: $BACKUP_DIR_DEFAULT):"
-read input_dir
-BACKUP_DIR="${input_dir:-$BACKUP_DIR_DEFAULT}"
+if [[ $choice -eq 2 ]]; then
+    # List available machine backups
+    echo "Available machine backups in $BASE_BACKUP_DIR:"
+    options=()
+    while IFS= read -r d; do
+        options+=("$(basename "$d")")
+    done < <(find "$BASE_BACKUP_DIR" -maxdepth 1 -type d ! -path "$BASE_BACKUP_DIR" ! -path "*/.*")
+    
+    if [[ ${#options[@]} -eq 0 ]]; then
+        echo "No backups found. Defaulting to $BACKUP_DIR_DEFAULT"
+        BACKUP_DIR="$BACKUP_DIR_DEFAULT"
+    else
+        show_menu "Select Machine to Restore From" "${options[@]}"
+        machine_idx=$?
+        BACKUP_DIR="$BASE_BACKUP_DIR/${options[$machine_idx]}"
+    fi
+else
+    echo "Enter the full path for the backup folder (default: $BACKUP_DIR_DEFAULT):"
+    read input_dir
+    BACKUP_DIR="${input_dir:-$BACKUP_DIR_DEFAULT}"
+fi
 
 LINUX_SETTINGS="$HOME/.config/Antigravity/User"
 GLOBAL_RULES="$HOME/.gemini"
 EXT_FILE="$BACKUP_DIR/extensions_linux.txt"
 
 if [[ $choice -eq 1 ]]; then
-    echo "Starting Backup..."
+    echo "Starting Backup to $BACKUP_DIR..."
     mkdir -p "$BACKUP_DIR"
     
     # Backup Settings
@@ -114,13 +143,14 @@ if [[ $choice -eq 1 ]]; then
         echo "  - Settings folder not found at $LINUX_SETTINGS"
     fi
 
-    # Backup Global Rules
+    # Backup Global Rules (.gemini directory)
     if [[ -d "$GLOBAL_RULES" ]]; then
-        cp -R "$GLOBAL_RULES" "$BACKUP_DIR/"
-        echo "  - Global rules (.gemini) backed up."
+        # Use -a to preserve permissions and recurse correctly
+        cp -a "$GLOBAL_RULES" "$BACKUP_DIR/"
+        echo "  - Global rules (.gemini folder) backed up."
     fi
     
-    # Backup GEMINI.md explicitly if it exists
+    # Backup GEMINI.md explicitly if it exists (for visibility/parity with Win script)
     if [[ -f "$HOME/.gemini/GEMINI.md" ]]; then
         cp "$HOME/.gemini/GEMINI.md" "$BACKUP_DIR/" 2>/dev/null
         echo "  - GEMINI.md backed up."
@@ -134,26 +164,18 @@ if [[ $choice -eq 1 ]]; then
         echo "  - Warning: Failed to export extensions"
     fi
 
-    echo "Backup complete to $BACKUP_DIR."
+    echo "Backup complete."
     
     # Git Push
     echo -n "Push changes to Git? (y/n): "
     read -n 1 -r push_choice
     echo
     if [[ $push_choice == "y" || $push_choice == "Y" ]]; then
-        git_sync_push "$BACKUP_DIR"
+        git_sync_push
     fi
 
 elif [[ $choice -eq 2 ]]; then
-    # Git Pull
-    echo -n "Pull latest settings from Git? (y/n): "
-    read -n 1 -r pull_choice
-    echo
-    if [[ $pull_choice == "y" || $pull_choice == "Y" ]]; then
-        git_sync_pull "$BACKUP_DIR"
-    fi
-
-    echo "Starting Restore..."
+    echo "Starting Restore from $BACKUP_DIR..."
     
     if [[ -f "$BACKUP_DIR/settings.json" ]]; then
         mkdir -p "$LINUX_SETTINGS"
@@ -168,7 +190,8 @@ elif [[ $choice -eq 2 ]]; then
     fi
 
     if [[ -d "$BACKUP_DIR/.gemini" ]]; then
-        cp -R "$BACKUP_DIR/.gemini" "$HOME/"
+        # Use -a and ensure we don't end up with .gemini/.gemini
+        cp -a "$BACKUP_DIR/.gemini" "$HOME/"
         echo "  - Restored .gemini rules"
     fi
 
