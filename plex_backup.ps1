@@ -20,7 +20,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 }
 
 # Load configuration from JSON file
-$ConfigPath = Join-Path $PSScriptRoot "plex_backup.json"
+$ConfigPath = Join-Path $env:USERPROFILE "Private\Configs\plex_backup.json"
 if (-not (Test-Path $ConfigPath)) {
     Write-Error "Config file not found: $ConfigPath. Please create it with PlexDataPath, BackupDestination, TempWorkingPath, and 7ZipPath."
     exit 1

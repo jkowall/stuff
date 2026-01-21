@@ -53,7 +53,7 @@ if (-not $LogFile) {
 
 #region Configuration
 # Load configuration from JSON file
-$ConfigPath = Join-Path $PSScriptRoot "Antigravity_Sync_Win.json"
+$ConfigPath = Join-Path $env:USERPROFILE "Private\Configs\Antigravity_Sync_Win.json"
 if (-not (Test-Path $ConfigPath)) {
     Write-Error "Config file not found: $ConfigPath. Please create it with BaseBackupPath."
     exit 1
@@ -202,7 +202,7 @@ function Sync-Path {
 function Invoke-GitSync {
     param([string]$Path, [ValidateSet("pull", "push")]$Action)
     
-    Write-Log "Git $Action: Checking repository in $Path..."
+    Write-Log "Git ${Action}: Checking repository in $Path..."
     
     # Find Git root
     $current = $Path

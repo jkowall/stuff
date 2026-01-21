@@ -42,9 +42,9 @@ A collection of PowerShell and shell scripts for system automation, backup, and 
 
 ## Configuration
 
-Scripts that require personal configuration use external JSON config files. These config files are **not tracked in Git** to protect sensitive data.
+Scripts that require personal configuration now use external JSON config files stored in your **Private repository** (`C:\Users\jkowa\Private\Configs`). These config files are **not tracked in Git** here to protect sensitive data.
 
-### Required Config Files
+### Required Config Files (In Private Repo)
 
 | Config File | Required By | Keys |
 |-------------|-------------|------|

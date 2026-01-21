@@ -2,8 +2,7 @@
 # Antigravity_Sync_Mac.sh
 
 # Load config from JSON file
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CONFIG_FILE="$SCRIPT_DIR/Antigravity_Sync_Mac.json"
+CONFIG_FILE="$HOME/Private/Configs/Antigravity_Sync_Mac.json"
 if [[ ! -f "$CONFIG_FILE" ]]; then
     echo "Error: Config file not found: $CONFIG_FILE"
     echo "Please create it with DefaultBackupPath."

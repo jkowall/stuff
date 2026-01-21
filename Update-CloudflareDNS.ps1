@@ -8,7 +8,7 @@
 #>
 
 # Load configuration from JSON file
-$ConfigPath = Join-Path $PSScriptRoot "Update-CloudflareDNS.json"
+$ConfigPath = Join-Path $env:USERPROFILE "Private\Configs\Update-CloudflareDNS.json"
 if (-not (Test-Path $ConfigPath)) {
     Write-Error "Config file not found: $ConfigPath. Please create it with ApiToken, ZoneId, DnsRecordName, and TtlValue."
     exit 1
