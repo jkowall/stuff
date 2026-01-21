@@ -201,8 +201,18 @@ elif [[ $choice -eq 2 ]]; then
         echo "  - Restored GEMINI.md"
     fi
     
-    if [[ -f "$EXT_FILE" ]]; then
-        echo "Found extensions_linux.txt. Reinstall all extensions? (y/n)"
+    # Find extension list (check multiple possible names for cross-platform restore)
+    EXT_TO_RESTORE=""
+    for f in "extensions_linux.txt" "extensions.txt" "extensions_wsl.txt" "extensions_mac.txt"; do
+        if [[ -f "$BACKUP_DIR/$f" ]]; then
+            EXT_TO_RESTORE="$BACKUP_DIR/$f"
+            echo "  - Found extension list: $f"
+            break
+        fi
+    done
+
+    if [[ -n "$EXT_TO_RESTORE" ]]; then
+        echo "Reinstall all extensions from list? (y/n)"
         read -n 1 -r install_choice
         echo
         if [[ $install_choice == "y" || $install_choice == "Y" ]]; then
@@ -212,7 +222,7 @@ elif [[ $choice -eq 2 ]]; then
                     echo "  Installing: $ext"
                     antigravity --install-extension "$ext" --force 2>/dev/null
                 fi
-            done < <(tr -d '\r' < "$EXT_FILE")
+            done < <(tr -d '\r' < "$EXT_TO_RESTORE")
         fi
     fi
     echo "Restore complete."
