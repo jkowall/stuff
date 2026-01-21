@@ -121,10 +121,11 @@ if [[ $choice -eq 2 ]]; then
         BACKUP_DIR="$BASE_BACKUP_DIR/${options[$machine_idx]}"
     fi
 else
-    echo "Enter the full path for the backup folder (default: $BACKUP_DIR_DEFAULT):"
+    echo "Enter the full path (default: $BACKUP_DIR_DEFAULT):"
     read input_dir
     BACKUP_DIR="${input_dir:-$BACKUP_DIR_DEFAULT}"
 fi
+echo "Selected backup folder: $BACKUP_DIR"
 
 LINUX_SETTINGS="$HOME/.config/Antigravity/User"
 GLOBAL_RULES="$HOME/.gemini"
@@ -203,18 +204,27 @@ elif [[ $choice -eq 2 ]]; then
     
     # Find extension list (check multiple possible names for cross-platform restore)
     EXT_TO_RESTORE=""
-    for f in "extensions_linux.txt" "extensions.txt" "extensions_wsl.txt" "extensions_mac.txt"; do
+    echo "  - Checking for extension lists in $BACKUP_DIR..."
+    for f in "extensions_linux.txt" "extensions.txt" "extensions_wsl.txt" "extensions_mac.txt" "extensions_mac.txt"; do
         if [[ -f "$BACKUP_DIR/$f" ]]; then
             EXT_TO_RESTORE="$BACKUP_DIR/$f"
             echo "  - Found extension list: $f"
             break
         fi
     done
+    
+    # Fallback: check for any .txt file starting with extensions
+    if [[ -z "$EXT_TO_RESTORE" ]]; then
+        fallback_ext=$(find "$BACKUP_DIR" -maxdepth 1 -name "extensions*.txt" -print -quit)
+        if [[ -n "$fallback_ext" ]]; then
+            EXT_TO_RESTORE="$fallback_ext"
+            echo "  - Found extension list (fallback): $(basename "$EXT_TO_RESTORE")"
+        fi
+    fi
 
     if [[ -n "$EXT_TO_RESTORE" ]]; then
-        echo "Reinstall all extensions from list? (y/n)"
-        read -n 1 -r install_choice
-        echo
+        echo -n "Reinstall all extensions from list? (y/n): "
+        read install_choice
         if [[ $install_choice == "y" || $install_choice == "Y" ]]; then
             echo "Installing/updating extensions..."
             while read -r ext; do
