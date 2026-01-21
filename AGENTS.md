@@ -113,7 +113,7 @@ git config commit.gpgsign true
 ├── restart_camera_hub.ps1        # Restart Elgato Camera Hub
 │
 ├── # Media Processing
-├── Convert mp4 to ig.ps1         # Instagram video converter
+├── Convert-Mp4ToIg.ps1         # Instagram video converter
 ├── instagram.ps1                 # Instagram re-encoder
 └── download.ps1                  # YouTube/SoundCloud downloader
 ```

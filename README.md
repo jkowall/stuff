@@ -36,7 +36,7 @@ A collection of PowerShell and shell scripts for system automation, backup, and 
 
 | Script | Description |
 |--------|-------------|
-| [`Convert mp4 to ig.ps1`](Convert%20mp4%20to%20ig.ps1) | Batch converts MP4 files for Instagram (1080x1350 portrait format) using FFmpeg. |
+| [`Convert-Mp4ToIg.ps1`](Convert-Mp4ToIg.ps1) | Batch converts MP4 files for Instagram (1080x1350 portrait format) using FFmpeg. |
 | [`instagram.ps1`](instagram.ps1) | Re-encodes videos for Instagram in a directory using FFmpeg. |
 | [`download.ps1`](download.ps1) | Downloads media from YouTube or SoundCloud using yt-dlp and scdl. |
 
