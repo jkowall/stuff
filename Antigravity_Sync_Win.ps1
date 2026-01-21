@@ -192,7 +192,8 @@ function Sync-Path {
         if (!(Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
         
         # Use robocopy for robust directory sync
-        $args = @($Source, $Dest, "/E", "/XJ", "/XD", ".gemini", "/R:1", "/W:1", "/NFL", "/NDL", "/NJH", "/NJS")
+        # Exclude GEMINI.md from robocopy to handle it explicitly if needed, although it's inside .gemini which is included
+        $args = @($Source, $Dest, "/E", "/XJ", "/XD", ".gemini", "/XF", "GEMINI.md", "/R:1", "/W:1", "/NFL", "/NDL", "/NJH", "/NJS")
         & robocopy $args | Out-Null
         return "Success"
     }
@@ -254,6 +255,36 @@ function Invoke-Sync {
             Write-Log "  Rules (.gemini): $res" -Level $level
         }
         catch { Write-Log "  Rules (.gemini): Error - $_" -Level Error }
+    }
+
+    # 2.5 GEMINI.md (Special Handling)
+    # User requirement: Backup from WSL only, Restore to both Windows and WSL
+    $winGemini = Join-Path $Script:Config.Win.Rules "GEMINI.md"
+    $backupGemini = Join-Path $targetPath "GEMINI.md"
+
+    if ($Restore) {
+        if (Test-Path $backupGemini) {
+            # Restore to current environment (Win or WSL)
+            $res = Sync-Path -Source $backupGemini -Dest (Join-Path $SourceEnv.Rules "GEMINI.md") -IsFile
+            if ($res -eq "Success") { $level = "Success" } else { $level = "Warning" }
+            Write-Log "  GEMINI.md ($envName): $res" -Level $level
+            
+            # If we are restoring Windows, also ensure it goes to WSL if IncludeWSL is on (and vice-versa)
+            # However, Invoke-Sync is called per-environment, so it will naturally cover both if both are in $Envs.
+        }
+    }
+    else {
+        # Backup: Only if this is the WSL environment
+        if ($SourceEnv.WSL) {
+            $srcGemini = Join-Path $SourceEnv.Rules "GEMINI.md"
+            if (Test-Path $srcGemini) {
+                $res = Sync-Path -Source $srcGemini -Dest $backupGemini -IsFile
+                Write-Log "  GEMINI.md (WSL Export): $res" -Level Success
+            }
+            else {
+                Write-Log "  GEMINI.md: Not found in WSL" -Level Warning
+            }
+        }
     }
     
     # 3. Extensions

@@ -82,6 +82,7 @@ if [[ $choice -eq 1 ]]; then
     cp "$MAC_SETTINGS/settings.json" "$BACKUP_DIR/" 2>/dev/null
     cp "$MAC_SETTINGS/keybindings.json" "$BACKUP_DIR/" 2>/dev/null
     cp -R "$GLOBAL_RULES" "$BACKUP_DIR/"
+    cp "$HOME/.gemini/GEMINI.md" "$BACKUP_DIR/" 2>/dev/null
     
     echo "Exporting extension list..."
     antigravity --list-extensions > "$EXT_FILE"
@@ -107,6 +108,14 @@ elif [[ $choice -eq 2 ]]; then
         echo "Restored .gemini rules"
     else
         echo "Skipping .gemini rules (not found in backup)"
+    fi
+
+    if [[ -f "$BACKUP_DIR/GEMINI.md" ]]; then
+        mkdir -p "$HOME/.gemini"
+        cp "$BACKUP_DIR/GEMINI.md" "$HOME/.gemini/"
+        echo "Restored GEMINI.md"
+    else
+        echo "Skipping GEMINI.md (not found in backup)"
     fi
     
     if [[ -f "$EXT_FILE" ]]; then
