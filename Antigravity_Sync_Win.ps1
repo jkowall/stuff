@@ -198,6 +198,49 @@ function Sync-Path {
         return "Success"
     }
 }
+
+function Invoke-GitSync {
+    param([string]$Path, [ValidateSet("pull", "push")]$Action)
+    
+    Write-Log "Git $Action: Checking repository in $Path..."
+    
+    # Find Git root
+    $current = $Path
+    $repoRoot = $null
+    while ($current -and (Split-Path $current)) {
+        if (Test-Path (Join-Path $current ".git")) {
+            $repoRoot = $current
+            break
+        }
+        $current = Split-Path $current -Parent
+    }
+    
+    if (-not $repoRoot) {
+        Write-Log "  Warning: Backup path is not inside a Git repository." -Level Warning
+        return
+    }
+    
+    $prevDir = Get-Location
+    try {
+        Set-Location $repoRoot
+        if ($Action -eq "pull") {
+            Write-Log "  Pulling latest changes..."
+            & git pull
+        }
+        else {
+            Write-Log "  Pushing local changes..."
+            & git add .
+            & git commit -m "Auto-backup Antigravity settings: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+            & git push
+        }
+    }
+    catch {
+        Write-Log "  Git $Action failed: $_" -Level Error
+    }
+    finally {
+        Set-Location $prevDir
+    }
+}
 #endregion
 
 #region Main Logic
@@ -325,6 +368,11 @@ try {
     $backupRoot = Join-Path $Script:Config.BaseBackupPath $subFolder
     
     if ($Action -eq "restore") {
+        # Prompt for Git Pull
+        if ($Force -or (Read-Host "Pull latest settings from Git? (y/n)") -eq 'y') {
+            Invoke-GitSync -Path $Script:Config.BaseBackupPath -Action pull
+        }
+
         # Select version if multiple exist
         $backups = Get-ChildItem $Script:Config.BaseBackupPath -Directory | Sort-Object Name -Descending
         if ($backups.Count -gt 1 -and !$Force) {
@@ -343,6 +391,13 @@ try {
     
     foreach ($env in $Envs) { Invoke-Sync -SourceEnv $env -BackupRoot $backupRoot -Restore:($Action -eq "restore") }
     
+    # Prompt for Git Push
+    if ($Action -eq "backup") {
+        if ($Force -or (Read-Host "Push changes to Git? (y/n)") -eq 'y') {
+            Invoke-GitSync -Path $Script:Config.BaseBackupPath -Action push
+        }
+    }
+
     Write-Log "=== Sync Completed ===" -Level Success
 }
 catch {

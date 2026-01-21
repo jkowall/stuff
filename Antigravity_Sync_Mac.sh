@@ -9,7 +9,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
     echo "Please create it with DefaultBackupPath."
     exit 1
 fi
-DEFAULT_BACKUP_PATH=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['DefaultBackupPath'])")
+DEFAULT_BACKUP_PATH=$(python3 -c "import json, os; print(os.path.expanduser(json.load(open('$CONFIG_FILE'))['DefaultBackupPath']))")
 
 # Function to display interactive menu
 show_menu() {
@@ -63,6 +63,29 @@ show_menu() {
     return $((selected - 1))  # Return 0-indexed for compatibility with rest of script
 }
 
+# Git helpers
+git_sync_pull() {
+    local target_dir=$1
+    echo "Checking for remote updates in $target_dir..."
+    local repo_root=$(cd "$target_dir" && git rev-parse --show-toplevel 2>/dev/null)
+    if [[ -n "$repo_root" ]]; then
+        (cd "$repo_root" && git pull)
+    else
+        echo "Warning: Backup directory is not inside a git repository."
+    fi
+}
+
+git_sync_push() {
+    local target_dir=$1
+    echo "Syncing backup to remote..."
+    local repo_root=$(cd "$target_dir" && git rev-parse --show-toplevel 2>/dev/null)
+    if [[ -n "$repo_root" ]]; then
+        (cd "$repo_root" && git add . && git commit -m "Auto-backup Antigravity settings: $(date)" && git push)
+    else
+        echo "Warning: Backup directory is not inside a git repository."
+    fi
+}
+
 # Determine Action
 show_menu "Select Action" "Backup" "Restore"
 choice_idx=$?
@@ -72,12 +95,12 @@ echo "Enter the full path for the backup folder (default: $DEFAULT_BACKUP_PATH):
 read input_dir
 BACKUP_DIR="${input_dir:-$DEFAULT_BACKUP_PATH}"
 
-
 MAC_SETTINGS="$HOME/Library/Application Support/Antigravity/User"
 GLOBAL_RULES="$HOME/.gemini"
 EXT_FILE="$BACKUP_DIR/extensions.txt"
 
 if [[ $choice -eq 1 ]]; then
+    echo "Starting Backup..."
     mkdir -p "$BACKUP_DIR"
     cp "$MAC_SETTINGS/settings.json" "$BACKUP_DIR/" 2>/dev/null
     cp "$MAC_SETTINGS/keybindings.json" "$BACKUP_DIR/" 2>/dev/null
@@ -88,34 +111,41 @@ if [[ $choice -eq 1 ]]; then
     antigravity --list-extensions > "$EXT_FILE"
     echo "Backup complete to $BACKUP_DIR."
 
+    # Git Push
+    echo -n "Push changes to Git? (y/n): "
+    read push_choice
+    if [[ $push_choice == "y" || $push_choice == "Y" ]]; then
+        git_sync_push "$BACKUP_DIR"
+    fi
+
 elif [[ $choice -eq 2 ]]; then
+    # Git Pull
+    echo -n "Pull latest settings from Git? (y/n): "
+    read pull_choice
+    if [[ $pull_choice == "y" || $pull_choice == "Y" ]]; then
+        git_sync_pull "$BACKUP_DIR"
+    fi
+
+    echo "Starting Restore..."
     if [[ -f "$BACKUP_DIR/settings.json" ]]; then
         cp "$BACKUP_DIR/settings.json" "$MAC_SETTINGS/"
         echo "Restored settings.json"
-    else
-        echo "Skipping settings.json (not found in backup)"
     fi
 
     if [[ -f "$BACKUP_DIR/keybindings.json" ]]; then
         cp "$BACKUP_DIR/keybindings.json" "$MAC_SETTINGS/"
         echo "Restored keybindings.json"
-    else
-        echo "Skipping keybindings.json (not found in backup)"
     fi
 
     if [[ -d "$BACKUP_DIR/.gemini" ]]; then
         cp -R "$BACKUP_DIR/.gemini" "$HOME/"
         echo "Restored .gemini rules"
-    else
-        echo "Skipping .gemini rules (not found in backup)"
     fi
 
     if [[ -f "$BACKUP_DIR/GEMINI.md" ]]; then
         mkdir -p "$HOME/.gemini"
         cp "$BACKUP_DIR/GEMINI.md" "$HOME/.gemini/"
         echo "Restored GEMINI.md"
-    else
-        echo "Skipping GEMINI.md (not found in backup)"
     fi
     
     if [[ -f "$EXT_FILE" ]]; then
@@ -123,8 +153,6 @@ elif [[ $choice -eq 2 ]]; then
         read install_choice
         if [[ $install_choice == "y" ]]; then
             echo "Installing/updating extensions..."
-            # Use tr to remove carriage returns (\r) in case the file came from Windows
-            # Use --force to update to latest versions, suppress stderr noise from internal messages
             tr -d '\r' < "$EXT_FILE" | while read -r ext; do
                 echo "  Installing: $ext"
                 antigravity --install-extension "$ext" --force 2>/dev/null

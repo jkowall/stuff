@@ -2,7 +2,7 @@
 .SYNOPSIS
     Sets up Windows Task Scheduler task for weekly package updates.
 .DESCRIPTION
-    Creates a scheduled task to run Update-AllPackages.ps1 every Saturday at 1:00 PM.
+    Creates a scheduled task to run Update-AllPackages.ps1 every Saturday at 1:00 AM.
     Can also be used to update or remove the scheduled task.
 .PARAMETER Remove
     Remove the scheduled task instead of creating it.
@@ -128,7 +128,7 @@ try {
     $Trigger = New-ScheduledTaskTrigger `
         -Weekly `
         -DaysOfWeek Saturday `
-        -At "1:00PM"
+        -At "1:00AM"
     
     # Create settings
     $Settings = New-ScheduledTaskSettingsSet `
@@ -151,13 +151,13 @@ try {
         -Trigger $Trigger `
         -Settings $Settings `
         -Principal $Principal `
-        -Description "Weekly update of winget, Chocolatey, and npm packages. Runs every Saturday at 1:00 PM."
+        -Description "Weekly update of winget, Chocolatey, and npm packages. Runs every Saturday at 1:00 AM."
     
     Write-Status "Scheduled task created successfully!" -Level Success
     Write-Status "" -Level Info
     Write-Status "Task Details:" -Level Info
     Write-Status "  Name: $TaskName" -Level Info
-    Write-Status "  Schedule: Every Saturday at 1:00 PM" -Level Info
+    Write-Status "  Schedule: Every Saturday at 1:00 AM" -Level Info
     Write-Status "  Script: $UpdateScript" -Level Info
     Write-Status "" -Level Info
     Write-Status "To run the update manually, execute:" -Level Info

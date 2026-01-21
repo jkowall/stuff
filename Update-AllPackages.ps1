@@ -5,7 +5,6 @@
     Updates all packages from winget, Chocolatey (both admin and user), and npm global packages.
     Logs all output to a timestamped file and shows toast notifications.
 .NOTES
-    Schedule: Saturdays at 1:00 PM
     Author: Auto-generated
 #>
 
@@ -343,6 +342,74 @@ function Show-Summary {
     }
 }
 
+function Verify-ScheduledTask {
+    $TaskName = $ScriptName
+    $ScriptPath = $PSCommandPath
+    
+    try {
+        $ExistingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        
+        if ($ExistingTask) {
+            # Check if trigger matches Saturday at 1 AM
+            $Trigger = $ExistingTask.Triggers | Where-Object { $_.WeeklyDetails -and $_.WeeklyDetails.DaysOfWeek -eq "Saturday" -and $_.StartBoundary -like "*T01:00:00" }
+            if ($Trigger) {
+                Write-Log "Scheduled task '$TaskName' is correctly configured." -Level Info
+                return
+            }
+            Write-Log "Scheduled task '$TaskName' exists but configuration might be different. Recommended: Saturday at 1:00 AM." -Level Warning
+        }
+        else {
+            Write-Log "Scheduled task '$TaskName' not found." -Level Warning
+        }
+
+        # If we get here, the task is missing or misconfigured
+        Write-Host ""
+        Write-Host "--- SCHEDULED TASK SETUP ---" -ForegroundColor Cyan
+        Write-Host "This script is not currently scheduled to run weekly."
+        $Choice = Read-Host "Would you like to schedule it to run every Saturday at 1:00 AM? (y/n)"
+        
+        if ($Choice -eq 'y') {
+            Write-Log "User requested to schedule the task." -Level Info
+            
+            $Action = New-ScheduledTaskAction `
+                -Execute "powershell.exe" `
+                -Argument "-ExecutionPolicy Bypass -NoExit -File `"$ScriptPath`"" `
+                -WorkingDirectory $ScriptDir
+            
+            $Trigger = New-ScheduledTaskTrigger `
+                -Weekly `
+                -DaysOfWeek Saturday `
+                -At "1:00AM"
+            
+            $Settings = New-ScheduledTaskSettingsSet `
+                -AllowStartIfOnBatteries `
+                -DontStopIfGoingOnBatteries `
+                -StartWhenAvailable `
+                -RunOnlyIfNetworkAvailable `
+                -WakeToRun:$false
+            
+            $Principal = New-ScheduledTaskPrincipal `
+                -UserId $env:USERNAME `
+                -LogonType Interactive `
+                -RunLevel Limited
+            
+            Register-ScheduledTask `
+                -TaskName $TaskName `
+                -Action $Action `
+                -Trigger $Trigger `
+                -Settings $Settings `
+                -Principal $Principal `
+                -Description "Weekly update of winget, Chocolatey, and npm packages. Runs every Saturday at 1:00 AM."
+            
+            Write-Log "Scheduled task '$TaskName' created successfully!" -Level Success
+            Show-ToastNotification -Title "Task Scheduled" -Message "Weekly updates scheduled for Saturdays at 1:00 AM" -Type Info
+        }
+    }
+    catch {
+        Write-Log "Failed to verify or create scheduled task: $($_.Exception.Message)" -Level Error
+    }
+}
+
 # ============================================================================
 # MAIN EXECUTION
 # ============================================================================
@@ -356,6 +423,9 @@ Write-Log "PACKAGE UPDATE STARTED" -Level Info
 Write-Log "Script Directory: $ScriptDir" -Level Info
 Write-Log "Log File: $LogFile" -Level Info
 Write-Log "=" * 60 -Level Info
+
+# Verify scheduling
+Verify-ScheduledTask
 
 # Clean up old log files (keep only 3 most recent)
 $LogPattern = Join-Path $ScriptDir "${ScriptName}_*.log"

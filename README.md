@@ -16,16 +16,17 @@ A collection of PowerShell and shell scripts for system automation, backup, and 
 
 | Script | Description |
 |--------|-------------|
-| [`Antigravity_Sync_Win.ps1`](Antigravity_Sync_Win.ps1) | Backup and restore Antigravity IDE settings, extensions, and global AI rules on Windows. Supports WSL environments. |
-| [`Antigravity_Sync_Mac.sh`](Antigravity_Sync_Mac.sh) | Backup and restore Antigravity IDE settings on macOS. |
+| [`Antigravity_Sync_Win.ps1`](Antigravity_Sync_Win.ps1) | Backup and restore Antigravity IDE settings, extensions, and global AI rules on Windows. Supports WSL and integrated Git sync. |
+| [`Antigravity_Sync_Mac.sh`](Antigravity_Sync_Mac.sh) | Backup and restore Antigravity IDE settings on macOS. Supports integrated Git sync. |
+| [`Antigravity_Sync_Linux.sh`](Antigravity_Sync_Linux.sh) | Backup and restore Antigravity IDE settings on Linux. Supports integrated Git sync. |
 | [`plex_backup.ps1`](plex_backup.ps1) | Backup Plex Media Server data and registry settings to a compressed 7z archive. Handles service stop/start automatically. |
 
 ### System Maintenance
 
 | Script | Description |
 |--------|-------------|
-| [`Update-AllPackages.ps1`](Update-AllPackages.ps1) | Weekly update script for winget, Chocolatey, and npm packages. Logs output and shows toast notifications. |
-| [`Setup-PackageUpdateTasks.ps1`](Setup-PackageUpdateTasks.ps1) | Sets up a Windows Task Scheduler task to run `Update-AllPackages.ps1` weekly (Saturdays at 1 PM). |
+| [`Update-AllPackages.ps1`](Update-AllPackages.ps1) | Weekly update script for winget, Chocolatey, and npm packages. Auto-schedules itself if missing. Logs output and shows toast notifications. |
+| [`Setup-PackageUpdateTasks.ps1`](Setup-PackageUpdateTasks.ps1) | Sets up a Windows Task Scheduler task to run `Update-AllPackages.ps1` weekly (Saturdays at 1 AM). |
 | [`Update-CloudflareDNS.ps1`](Update-CloudflareDNS.ps1) | Dynamic DNS updater for Cloudflare. Updates a DNS record with your current public IP address. |
 | [`clean_plex.ps1`](clean_plex.ps1) | Cleans up orphaned data, caches, logs, and temporary files in Plex Media Server. Triggers Plex's internal cleanup tasks via API. |
 | [`list_apps.ps1`](list_apps.ps1) | Lists installed applications from multiple sources: Registry, Microsoft Store, Winget, Chocolatey, Scoop, and npm. |
@@ -50,6 +51,7 @@ Scripts that require personal configuration use external JSON config files. Thes
 | `Update-CloudflareDNS.json` | `Update-CloudflareDNS.ps1` | `ApiToken`, `ZoneId`, `DnsRecordName`, `TtlValue` |
 | `Antigravity_Sync_Win.json` | `Antigravity_Sync_Win.ps1` | `BaseBackupPath` |
 | `Antigravity_Sync_Mac.json` | `Antigravity_Sync_Mac.sh` | `DefaultBackupPath` |
+| `Antigravity_Sync_Linux.json` | `Antigravity_Sync_Linux.sh` | `DefaultBackupPath` |
 | `plex_backup.json` | `plex_backup.ps1` | `PlexDataPath`, `BackupDestination`, `TempWorkingPath`, `7ZipPath` |
 
 ### Example Config Templates
