@@ -276,21 +276,61 @@ function Update-NpmGlobal {
             Write-Log "No outdated packages found" -Level Info
         }
         
-        # Update all global packages
-        Write-Log "Running: npm update -g" -Level Info
-        $Output = & npm update -g 2>&1
-        $Output | ForEach-Object { Write-Log $_ -Level Info }
+        # Check if npm is installed in Program Files (requires admin)
+        $NpmDir = Split-Path (Split-Path $NpmPath.Source -Parent) -Parent
+        $RequiresAdmin = $NpmDir -like "*Program Files*"
         
-        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) {
-            $script:Results.Npm.Status = "Success"
-            $script:Results.Npm.Message = "npm global packages updated successfully"
-            Write-Log "npm global updates completed successfully" -Level Success
+        # Check if running as admin
+        $IsAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        
+        if ($RequiresAdmin -and -not $IsAdmin) {
+            Write-Log "npm is installed in Program Files - requires elevation" -Level Warning
+            Write-Log "A UAC prompt will appear. Please approve to update global npm packages." -Level Warning
+            
+            # Create a temporary script to run elevated
+            $TempScript = Join-Path $env:TEMP "npm-global-update.ps1"
+            $TempLog = Join-Path $env:TEMP "npm-global-update.log"
+            
+            @"
+`$ErrorActionPreference = 'Continue'
+`$Output = & npm update -g 2>&1
+`$Output | Out-File -FilePath '$TempLog' -Encoding UTF8
+"@ | Out-File -FilePath $TempScript -Encoding UTF8
+            
+            $Process = Start-Process -FilePath "powershell.exe" `
+                -ArgumentList "-ExecutionPolicy Bypass -File `"$TempScript`"" `
+                -Verb RunAs `
+                -Wait `
+                -PassThru
+            
+            # Read and log the output
+            if (Test-Path $TempLog) {
+                Get-Content $TempLog | ForEach-Object { Write-Log $_ -Level Info }
+                Remove-Item $TempLog -Force -ErrorAction SilentlyContinue
+            }
+            Remove-Item $TempScript -Force -ErrorAction SilentlyContinue
+            
+            if ($Process.ExitCode -ne 0) {
+                throw "Elevated npm process exited with code: $($Process.ExitCode)"
+            }
         }
         else {
-            $script:Results.Npm.Status = "Warning"
-            $script:Results.Npm.Message = "npm completed with exit code: $LASTEXITCODE"
-            Write-Log "npm completed with exit code: $LASTEXITCODE" -Level Warning
+            # Run directly (either already admin or npm is in user directory)
+            Write-Log "Running: npm update -g" -Level Info
+            $Output = & npm update -g 2>&1
+            $Output | ForEach-Object { Write-Log $_ -Level Info }
+            
+            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) {
+                $script:Results.Npm.Status = "Warning"
+                $script:Results.Npm.Message = "npm completed with exit code: $LASTEXITCODE"
+                Write-Log "npm completed with exit code: $LASTEXITCODE" -Level Warning
+                return
+            }
         }
+        
+        $script:Results.Npm.Status = "Success"
+        $script:Results.Npm.Message = "npm global packages updated successfully"
+        Write-Log "npm global updates completed successfully" -Level Success
     }
     catch {
         $script:Results.Npm.Status = "Error"
@@ -370,6 +410,12 @@ function Verify-ScheduledTask {
         
         if ($Choice -eq 'y') {
             Write-Log "User requested to schedule the task." -Level Info
+            
+            # Remove existing task if it exists to prevent duplicates
+            if ($ExistingTask) {
+                Write-Log "Removing existing task to prevent duplicates..." -Level Info
+                Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+            }
             
             $Action = New-ScheduledTaskAction `
                 -Execute "powershell.exe" `
