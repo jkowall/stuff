@@ -173,6 +173,7 @@ if [[ $choice -eq 1 ]]; then
             rsync -av --exclude="antigravity-browser-profile/" \
                       --exclude="antigravity/conversations/" \
                       --exclude="antigravity/annotations/" \
+                      --exclude="antigravity/code_tracker/" \
                       --exclude="tmp/" \
                       --exclude="installation_id" \
                       --exclude="state.json" \

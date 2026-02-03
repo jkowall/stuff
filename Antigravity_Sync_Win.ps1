@@ -202,7 +202,7 @@ function Sync-Path {
         if (!(Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
         
         # Use robocopy for robust directory sync with junk exclusions
-        $xd = @("antigravity-browser-profile", "conversations", "annotations", "tmp")
+        $xd = @("antigravity-browser-profile", "conversations", "annotations", "code_tracker", "tmp")
         $xf = @("installation_id", "state.json", "GEMINI.md") # GEMINI.md handled explicitly in Invoke-Sync
         $args = @($Source, $Dest, "/E", "/XJ", "/XD") + $xd + @("/XF") + $xf + @("/R:1", "/W:1", "/NFL", "/NDL", "/NJH", "/NJS")
         
