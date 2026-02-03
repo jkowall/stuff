@@ -60,6 +60,10 @@ if (-not (Test-Path $ConfigPath)) {
 }
 $ConfigData = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
+# Determine PreRestorePath (Default to D:\tmp if D exists, otherwise Temp)
+$defaultPreRestore = if (Test-Path "D:\") { "D:\tmp" } else { $env:TEMP }
+$preRestoreBase = if ($ConfigData.PreRestorePath) { $ConfigData.PreRestorePath } else { $defaultPreRestore }
+
 # CLI Check
 if (-not (Get-Command "antigravity" -ErrorAction SilentlyContinue)) {
     Write-Host "Error: 'antigravity' CLI not found. Please ensure it is installed and in your PATH." -ForegroundColor Red
@@ -197,9 +201,11 @@ function Sync-Path {
         $parent = Split-Path -Parent $Dest
         if (!(Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
         
-        # Use robocopy for robust directory sync
-        # Exclude GEMINI.md from robocopy to handle it explicitly if needed, although it's inside .gemini which is included
-        $args = @($Source, $Dest, "/E", "/XJ", "/XD", ".gemini", "/XF", "GEMINI.md", "/R:1", "/W:1", "/NFL", "/NDL", "/NJH", "/NJS")
+        # Use robocopy for robust directory sync with junk exclusions
+        $xd = @("antigravity-browser-profile", "conversations", "annotations", "tmp")
+        $xf = @("installation_id", "state.json", "GEMINI.md") # GEMINI.md handled explicitly in Invoke-Sync
+        $args = @($Source, $Dest, "/E", "/XJ", "/XD") + $xd + @("/XF") + $xf + @("/R:1", "/W:1", "/NFL", "/NDL", "/NJH", "/NJS")
+        
         & robocopy $args | Out-Null
         return "Success"
     }
@@ -271,17 +277,33 @@ function Invoke-Sync {
     
     if ($Restore) {
         # 1. Pre-restore Backup (Safety Net)
-        $preRestoreRoot = Join-Path $Script:Config.BaseBackupPath "pre_restore_backup_$((Get-Date).ToString('yyyyMMdd_HHmmss'))"
-        Write-Log "Creating safety backup of current local settings to $preRestoreRoot..."
-        New-Item -ItemType Directory -Path $preRestoreRoot -Force | Out-Null
+        # Move to a non-git directory (default D:\tmp or Temp) and keep only 2
+        $preRestoreRoot = Join-Path $preRestoreBase "antigravity_pre_restore"
+        $preRestoreDir = Join-Path $preRestoreRoot "backup_$((Get-Date).ToString('yyyyMMdd_HHmmss'))"
+        
+        Write-Log "Creating safety backup of current local settings to $preRestoreDir..."
+        New-Item -ItemType Directory -Path $preRestoreDir -Force | Out-Null
         
         foreach ($file in $Script:Config.SettingsFiles) {
             $src = Join-Path $SourceEnv.Settings $file
-            if (Test-Path $src) { Copy-Item -Path $src -Destination $preRestoreRoot -Force }
+            if (Test-Path $src) { Copy-Item -Path $src -Destination $preRestoreDir -Force }
         }
         if (Test-Path $SourceEnv.Rules) {
-            $destRules = Join-Path $preRestoreRoot ".gemini"
+            $destRules = Join-Path $preRestoreDir ".gemini"
             Copy-Item -Path $SourceEnv.Rules -Destination $destRules -Recurse -Force
+        }
+
+        # Prune to keep only 2 most recent backups
+        if (Test-Path $preRestoreRoot) {
+            $oldBackups = Get-ChildItem $preRestoreRoot -Directory | 
+                Where-Object { $_.Name -like "backup_*" } | 
+                Sort-Object LastWriteTime -Descending | 
+                Select-Object -Skip 2
+            
+            if ($oldBackups) {
+                Write-Log "Pruning old pre-restore backups..."
+                $oldBackups | Remove-Item -Recurse -Force
+            }
         }
 
         # 2. Settings Diff Preview

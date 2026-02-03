@@ -46,7 +46,7 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 
 ### Common Patterns across Sync Scripts
 
-1. **Pre-restore Safety**: Always implement a "safety backup" of current local settings before performing a restoration.
+1. **Pre-restore Safety**: Always implement a "safety backup" of current local settings before performing a restoration. Store these in a non-Git tracked directory (default: `/tmp` or `D:\tmp`) and keep only the latest 2 versions.
 2. **Interactive Menus**: Use arrow-key navigable menus for action selection and backup choice.
 3. **CLI Verification**: Check for the presence of required CLIs (like `antigravity`) before execution.
 4. **Versioning & Pruning**: Support timestamped folder creation (e.g., `-v` flag) paired with a 30-day auto-pruning logic for maintenance.

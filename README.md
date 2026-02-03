@@ -61,9 +61,9 @@ Scripts that require personal configuration now use external JSON config files s
 | Config File | Required By | Keys |
 |-------------|-------------|------|
 | `Update-CloudflareDNS.json` | `Update-CloudflareDNS.ps1` | `ApiToken`, `ZoneId`, `DnsRecordName`, `TtlValue` |
-| `Antigravity_Sync_Win.json` | `Antigravity_Sync_Win.ps1` | `BaseBackupPath` |
-| `Antigravity_Sync_Mac.json` | `Antigravity_Sync_Mac.sh` | `DefaultBackupPath` |
-| `Antigravity_Sync_Linux.json` | `Antigravity_Sync_Linux.sh` | `DefaultBackupPath` |
+| `Antigravity_Sync_Win.json` | `Antigravity_Sync_Win.ps1` | `BaseBackupPath`, `PreRestorePath` (optional) |
+| `Antigravity_Sync_Mac.json` | `Antigravity_Sync_Mac.sh` | `DefaultBackupPath`, `PreRestorePath` (optional) |
+| `Antigravity_Sync_Linux.json` | `Antigravity_Sync_Linux.sh` | `DefaultBackupPath`, `PreRestorePath` (optional) |
 | `plex_backup.json` | `plex_backup.ps1` | `PlexDataPath`, `BackupDestination`, `TempWorkingPath`, `7ZipPath` |
 
 ### Example Config Templates

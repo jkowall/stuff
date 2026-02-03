@@ -12,6 +12,8 @@ fi
 # Parse path using python3 and expand tilde
 RAW_PATH=$(python3 -c "import json, os; print(os.path.expanduser(json.load(open('$CONFIG_FILE'))['DefaultBackupPath']))")
 BASE_BACKUP_DIR="$RAW_PATH"
+# Parse optional PreRestorePath
+PRE_RESTORE_BASE=$(python3 -c "import json, os; config = json.load(open('$CONFIG_FILE')); print(os.path.expanduser(config.get('PreRestorePath', '/tmp')))")
 # Use hostname for subfolder to match Windows behavior
 HOSTNAME=$(hostname)
 BACKUP_DIR_DEFAULT="$BASE_BACKUP_DIR/$HOSTNAME"
@@ -164,9 +166,20 @@ if [[ $choice -eq 1 ]]; then
 
     # Backup Global Rules (.gemini directory)
     if [[ -d "$GLOBAL_RULES" ]]; then
-        # Use -a to preserve permissions and recurse correctly
-        cp -a "$GLOBAL_RULES" "$BACKUP_DIR/"
-        echo "  - Global rules (.gemini folder) backed up."
+        echo "  - Backing up global rules (.gemini folder)..."
+        # Use rsync to exclude junk files if available, otherwise fallback to cp
+        if command -v rsync &> /dev/null; then
+            rsync -av --exclude="antigravity-browser-profile/" \
+                      --exclude="antigravity/conversations/" \
+                      --exclude="antigravity/annotations/" \
+                      --exclude="tmp/" \
+                      --exclude="installation_id" \
+                      --exclude="state.json" \
+                      "$GLOBAL_RULES/" "$BACKUP_DIR/.gemini/" > /dev/null
+        else
+            cp -a "$GLOBAL_RULES" "$BACKUP_DIR/"
+        fi
+        echo "  - Global rules backed up (clean sync)."
     fi
     
     # Backup GEMINI.md explicitly if it exists (for visibility/parity with Win script)
@@ -197,12 +210,24 @@ elif [[ $choice -eq 2 ]]; then
     echo "Starting Restore from $BACKUP_DIR..."
     
     # 1. Pre-restore Backup (Safety Net)
-    PRE_RESTORE_DIR="$BASE_BACKUP_DIR/pre_restore_backup_$(date +%Y%m%d_%H%M%S)"
+    # Move to a non-git directory (default /tmp) and keep only 2
+    PRE_RESTORE_ROOT="$PRE_RESTORE_BASE/antigravity_pre_restore"
+    PRE_RESTORE_DIR="$PRE_RESTORE_ROOT/backup_$(date +%Y%m%d_%H%M%S)"
     echo "Creating safety backup of current local settings to $PRE_RESTORE_DIR..."
     mkdir -p "$PRE_RESTORE_DIR"
     [[ -f "$LINUX_SETTINGS/settings.json" ]] && cp "$LINUX_SETTINGS/settings.json" "$PRE_RESTORE_DIR/"
     [[ -f "$LINUX_SETTINGS/keybindings.json" ]] && cp "$LINUX_SETTINGS/keybindings.json" "$PRE_RESTORE_DIR/"
     [[ -d "$GLOBAL_RULES" ]] && cp -a "$GLOBAL_RULES" "$PRE_RESTORE_DIR/"
+
+    # Prune to keep only 2 most recent backups
+    if [[ -d "$PRE_RESTORE_ROOT" ]]; then
+        # List backups by time (newest first), take from 3rd onwards
+        backups_to_remove=$(ls -dt "$PRE_RESTORE_ROOT"/backup_* 2>/dev/null | tail -n +3)
+        if [[ -n "$backups_to_remove" ]]; then
+            echo "Pruning old pre-restore backups..."
+            echo "$backups_to_remove" | xargs rm -rf
+        fi
+    fi
 
     # 2. Settings Diff Preview
     if [[ -f "$BACKUP_DIR/settings.json" && -f "$LINUX_SETTINGS/settings.json" ]]; then
@@ -233,8 +258,13 @@ elif [[ $choice -eq 2 ]]; then
     fi
 
     if [[ -d "$BACKUP_DIR/.gemini" ]]; then
-        # Use -a and ensure we don't end up with .gemini/.gemini
-        cp -a "$BACKUP_DIR/.gemini" "$HOME/"
+        echo "  - Restoring .gemini rules..."
+        if command -v rsync &> /dev/null; then
+            mkdir -p "$HOME/.gemini"
+            rsync -av "$BACKUP_DIR/.gemini/" "$HOME/.gemini/" > /dev/null
+        else
+            cp -a "$BACKUP_DIR/.gemini" "$HOME/"
+        fi
         echo "  - Restored .gemini rules"
     fi
 
