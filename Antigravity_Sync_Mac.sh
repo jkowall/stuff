@@ -91,7 +91,6 @@ git_sync_push() {
 }
 
 # Git Pull at Start
-echo -n "Pull latest settings from Git? (y/n): "
 read -q "pull_choice?Pull latest settings from Git? (y/n): "
 echo
 if [[ $pull_choice == "y" || $pull_choice == "Y" ]]; then

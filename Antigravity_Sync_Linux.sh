@@ -224,7 +224,8 @@ elif [[ $choice -eq 2 ]]; then
 
     if [[ -n "$EXT_TO_RESTORE" ]]; then
         echo -n "Reinstall all extensions from list? (y/n): "
-        read install_choice
+        read -n 1 -r install_choice
+        echo
         if [[ $install_choice == "y" || $install_choice == "Y" ]]; then
             echo "Installing/updating extensions..."
             while read -r ext; do
