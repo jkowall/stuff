@@ -231,12 +231,15 @@ function Invoke-GitSync {
         Set-Location $repoRoot
         if ($Action -eq "pull") {
             Write-Log "  Pulling latest changes..."
-            & git pull
+            & git pull --stat
         }
         else {
-            Write-Log "  Pushing local changes..."
+            Write-Log "  Staging changes..."
             & git add .
+            Write-Log "  Changes to be committed:"
+            & git status --short
             & git commit -m "Auto-backup Antigravity settings: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+            Write-Log "  Pushing to remote..."
             & git push
         }
     }

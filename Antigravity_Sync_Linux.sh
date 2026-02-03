@@ -76,11 +76,11 @@ show_menu() {
 # Git helpers
 git_sync_pull() {
     local target_dir=$1
-    echo "Checking for remote updates in $target_dir..."
+    echo "Checking for remote updates in $BASE_BACKUP_DIR..."
     # Find the git root for the base backup directory
     local repo_root=$(cd "$BASE_BACKUP_DIR" && git rev-parse --show-toplevel 2>/dev/null)
     if [[ -n "$repo_root" ]]; then
-        (cd "$repo_root" && git pull)
+        (cd "$repo_root" && git pull --stat)
     else
         echo "Warning: Base backup directory is not inside a git repository."
     fi
@@ -88,10 +88,18 @@ git_sync_pull() {
 
 git_sync_push() {
     local target_dir=$1
-    echo "Syncing backup to remote..."
+    echo "Staging changes for remote sync..."
     local repo_root=$(cd "$BASE_BACKUP_DIR" && git rev-parse --show-toplevel 2>/dev/null)
     if [[ -n "$repo_root" ]]; then
-        (cd "$repo_root" && git add . && git commit -m "Auto-backup Antigravity settings ($HOSTNAME): $(date)" && git push)
+        (
+            cd "$repo_root"
+            echo "Changes to be committed:"
+            git add .
+            git status --short
+            git commit -m "Auto-backup Antigravity settings ($HOSTNAME): $(date)"
+            echo "Pushing to remote..."
+            git push
+        )
     else
         echo "Warning: Base backup directory is not inside a git repository."
     fi
