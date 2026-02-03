@@ -167,20 +167,24 @@ if [[ $choice -eq 1 ]]; then
     
     # Backup Global Rules (.gemini directory)
     if [[ -d "$GLOBAL_RULES" ]]; then
-        echo "  - Backing up global rules (.gemini folder)..."
-        # Use rsync to exclude junk files if available, otherwise fallback to cp
-        if command -v rsync &> /dev/null; then
-            rsync -av --exclude="antigravity-browser-profile/" \
-                      --exclude="antigravity/conversations/" \
-                      --exclude="antigravity/annotations/" \
-                      --exclude="antigravity/code_tracker/" \
-                      --exclude="tmp/" \
-                      --exclude="installation_id" \
-                      --exclude="state.json" \
+        echo "  - Backing up global rules (.gemini folder) via whitelist..."
+        # Use rsync with a whitelist (Include) approach for a cleaner backup
+        rsync -avz --delete \
+                      --include="settings.json" \
+                      --include="oauth_creds.json" \
+                      --include="google_accounts.json" \
+                      --include="GEMINI.md" \
+                      --include="antigravity/" \
+                      --include="antigravity/mcp_config.json" \
+                      --include="antigravity/user_settings.pb" \
+                      --include="antigravity/browserAllowlist.txt" \
+                      --include="antigravity/browserOnboardingStatus.txt" \
+                      --include="antigravity/knowledge/" \
+                      --include="antigravity/knowledge/**" \
+                      --include="antigravity/scratch/" \
+                      --include="antigravity/scratch/**" \
+                      --exclude="*" \
                       "$GLOBAL_RULES/" "$BACKUP_DIR/.gemini/" > /dev/null
-        else
-            cp -R "$GLOBAL_RULES" "$BACKUP_DIR/"
-        fi
         echo "  - Global rules backed up (clean sync)."
     fi
     
@@ -276,13 +280,24 @@ elif [[ $choice -eq 2 ]]; then
     fi
 
     if [[ -d "$BACKUP_DIR/.gemini" ]]; then
-        echo "  - Restoring .gemini rules..."
-        if command -v rsync &> /dev/null; then
-            mkdir -p "$HOME/.gemini"
-            rsync -av "$BACKUP_DIR/.gemini/" "$HOME/.gemini/" > /dev/null
-        else
-            cp -R "$BACKUP_DIR/.gemini" "$HOME/"
-        fi
+        echo "  - Restoring .gemini rules via whitelist..."
+        mkdir -p "$HOME/.gemini"
+        rsync -avz --delete \
+                      --include="settings.json" \
+                      --include="oauth_creds.json" \
+                      --include="google_accounts.json" \
+                      --include="GEMINI.md" \
+                      --include="antigravity/" \
+                      --include="antigravity/mcp_config.json" \
+                      --include="antigravity/user_settings.pb" \
+                      --include="antigravity/browserAllowlist.txt" \
+                      --include="antigravity/browserOnboardingStatus.txt" \
+                      --include="antigravity/knowledge/" \
+                      --include="antigravity/knowledge/**" \
+                      --include="antigravity/scratch/" \
+                      --include="antigravity/scratch/**" \
+                      --exclude="*" \
+                      "$BACKUP_DIR/.gemini/" "$HOME/.gemini/" > /dev/null
         echo "  - Restored .gemini rules"
     fi
 

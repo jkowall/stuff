@@ -23,6 +23,7 @@ Antigravity Sync scripts provide a unified way to manage your IDE configuration 
 - **Safety First**: 
     - **Pre-restore Backups**: Every restore operation automatically creates a "safety" backup of your current local state before applying changes.
     - **Settings Diff Preview**: Displays differences between your local `settings.json` and the backup, allowing you to preview changes before they are applied.
+- **Lean Sync (Whitelisting)**: Instead of excluding junk, the scripts use a strict whitelist for the `.gemini` directory. Only essential configuration (settings, MCP configs, user profiles) is synced, avoiding bloat from machine-specific AI indices (150MB+).
 - **Extension Reconciliation**: Compares locally installed extensions with the backup and warns you if you have local extensions that aren't backed up.
 - **Git Integration**: Optional prompt to pull latest changes from Git before sync and push updates after backup.
 

@@ -194,19 +194,46 @@ function Sync-Path {
         # Check for WSL symlink to Windows
         if ($Source -match '^\\\\wsl') {
             $distro = $Source.Split('\')[3]
-            $target = wsl.exe -d $distro -- bash -c "readlink -f ~/.gemini" 2>&1
-            if (($target | Out-String) -match '/mnt/[a-z]/') { return "Skipped (symlinked to Windows)" }
+            $target = @(wsl.exe -d $distro -- bash -c "readlink -f ~/.gemini" 2>&1) | Out-String
+            if ($target -match '/mnt/[a-z]/') { return "Skipped (symlinked to Windows)" }
         }
         
         $parent = Split-Path -Parent $Dest
         if (!(Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
         
-        # Use robocopy for robust directory sync with junk exclusions
-        $xd = @("antigravity-browser-profile", "conversations", "annotations", "code_tracker", "tmp")
-        $xf = @("installation_id", "state.json", "GEMINI.md") # GEMINI.md handled explicitly in Invoke-Sync
-        $args = @($Source, $Dest, "/E", "/XJ", "/XD") + $xd + @("/XF") + $xf + @("/R:1", "/W:1", "/NFL", "/NDL", "/NJH", "/NJS")
+        # Use a whitelist (Include) approach for a cleaner backup
+        $includeFiles = @("settings.json", "oauth_creds.json", "google_accounts.json", "GEMINI.md")
+        $includeAntigravity = @("mcp_config.json", "user_settings.pb", "browserAllowlist.txt", "browserOnboardingStatus.txt")
+        $includeDirs = @("knowledge", "scratch")
+
+        # Create target .gemini and antigravity dirs
+        if (!(Test-Path $Dest)) { New-Item -ItemType Directory -Path $Dest -Force | Out-Null }
+        $destAntigravity = Join-Path $Dest "antigravity"
+        if (!(Test-Path $destAntigravity)) { New-Item -ItemType Directory -Path $destAntigravity -Force | Out-Null }
+
+        # Sync Whitelist Files in .gemini root
+        foreach ($f in $includeFiles) {
+            $srcFile = Join-Path $Source $f
+            if (Test-Path $srcFile) { Copy-Item -Path $srcFile -Destination $Dest -Force }
+        }
+
+        # Sync Whitelist Files in antigravity subfolder
+        $srcAntigravity = Join-Path $Source "antigravity"
+        if (Test-Path $srcAntigravity) {
+            foreach ($f in $includeAntigravity) {
+                $srcFile = Join-Path $srcAntigravity $f
+                if (Test-Path $srcFile) { Copy-Item -Path $srcFile -Destination $destAntigravity -Force }
+            }
+            # Sync Whitelist Directories
+            foreach ($d in $includeDirs) {
+                $srcDir = Join-Path $srcAntigravity $d
+                if (Test-Path $srcDir) {
+                    $destDir = Join-Path $destAntigravity $d
+                    Copy-Item -Path $srcDir -Destination $destDir -Recurse -Force
+                }
+            }
+        }
         
-        & robocopy $args | Out-Null
         return "Success"
     }
 }
