@@ -14,11 +14,23 @@ A collection of PowerShell and shell scripts for system automation, backup, and 
 
 ### Backup & Sync
 
+Antigravity Sync scripts provide a unified way to manage your IDE configuration across Windows, macOS, and Linux.
+
+**Key Features:**
+- **Cross-Platform Parity**: Identical feature set across all supported operating systems.
+- **Versioned Backups**: Use the `-v` (Mac/Linux) or `-Versioned` (Windows) flag to create timestamped snapshots instead of overwriting the default local backup.
+- **Automated Pruning**: Automatically offers to delete versioned backups older than 30 days to save space.
+- **Safety First**: 
+    - **Pre-restore Backups**: Every restore operation automatically creates a "safety" backup of your current local state before applying changes.
+    - **Settings Diff Preview**: Displays differences between your local `settings.json` and the backup, allowing you to preview changes before they are applied.
+- **Extension Reconciliation**: Compares locally installed extensions with the backup and warns you if you have local extensions that aren't backed up.
+- **Git Integration**: Optional prompt to pull latest changes from Git before sync and push updates after backup.
+
 | Script | Description |
 |--------|-------------|
-| [`Antigravity_Sync_Win.ps1`](Antigravity_Sync_Win.ps1) | Backup and restore Antigravity IDE settings, extensions, and global AI rules on Windows. Supports WSL and integrated Git sync. |
-| [`Antigravity_Sync_Mac.sh`](Antigravity_Sync_Mac.sh) | Backup and restore Antigravity IDE settings on macOS. Supports integrated Git sync. |
-| [`Antigravity_Sync_Linux.sh`](Antigravity_Sync_Linux.sh) | Backup and restore Antigravity IDE settings on Linux. Supports integrated Git sync. |
+| [`Antigravity_Sync_Win.ps1`](Antigravity_Sync_Win.ps1) | Primary sync tool for Windows. Supports WSL environments and integrated Git sync. |
+| [`Antigravity_Sync_Mac.sh`](Antigravity_Sync_Mac.sh) | macOS implementation with feature parity and Git sync. |
+| [`Antigravity_Sync_Linux.sh`](Antigravity_Sync_Linux.sh) | Linux implementation with feature parity and Git sync. |
 | [`plex_backup.ps1`](plex_backup.ps1) | Backup Plex Media Server data and registry settings to a compressed 7z archive. Handles service stop/start automatically. |
 
 ### System Maintenance
@@ -79,6 +91,7 @@ Scripts that require personal configuration now use external JSON config files s
 ## Prerequisites
 
 - **PowerShell 5.1+** (Windows scripts)
+- **Antigravity CLI** - Required for sync scripts
 - **FFmpeg** - Required for media conversion scripts
 - **yt-dlp** - Required for `download.ps1`
 - **scdl** - Required for SoundCloud downloads in `download.ps1`

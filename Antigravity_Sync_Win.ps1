@@ -60,6 +60,12 @@ if (-not (Test-Path $ConfigPath)) {
 }
 $ConfigData = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
+# CLI Check
+if (-not (Get-Command "antigravity" -ErrorAction SilentlyContinue)) {
+    Write-Host "Error: 'antigravity' CLI not found. Please ensure it is installed and in your PATH." -ForegroundColor Red
+    exit 1
+}
+
 $Script:Config = @{
     BaseBackupPath = $ConfigData.BaseBackupPath
     SettingsFiles  = @("settings.json", "keybindings.json")
@@ -260,6 +266,38 @@ function Invoke-Sync {
     Write-Log "----------------------------------------"
     Write-Log "$($Action.ToUpper())ing $envName..."
     
+    if ($Restore) {
+        # 1. Pre-restore Backup (Safety Net)
+        $preRestoreRoot = Join-Path $Script:Config.BaseBackupPath "pre_restore_backup_$((Get-Date).ToString('yyyyMMdd_HHmmss'))"
+        Write-Log "Creating safety backup of current local settings to $preRestoreRoot..."
+        New-Item -ItemType Directory -Path $preRestoreRoot -Force | Out-Null
+        
+        foreach ($file in $Script:Config.SettingsFiles) {
+            $src = Join-Path $SourceEnv.Settings $file
+            if (Test-Path $src) { Copy-Item -Path $src -Destination $preRestoreRoot -Force }
+        }
+        if (Test-Path $SourceEnv.Rules) {
+            $destRules = Join-Path $preRestoreRoot ".gemini"
+            Copy-Item -Path $SourceEnv.Rules -Destination $destRules -Recurse -Force
+        }
+
+        # 2. Settings Diff Preview
+        $localSettings = Join-Path $SourceEnv.Settings "settings.json"
+        $backupSettings = Join-Path $targetPath "settings.json"
+        if ((Test-Path $localSettings) -and (Test-Path $backupSettings)) {
+            $localContent = Get-Content $localSettings
+            $backupContent = Get-Content $backupSettings
+            $diff = Compare-Object $localContent $backupContent
+            if ($diff) {
+                Write-Log "Changes detected in settings.json (Local vs Backup)."
+                if ((Read-Host "Preview settings changes? (y/n)") -eq 'y') {
+                    $diff | Select-Object -First 20 | Out-String | Write-Host
+                }
+            }
+            else { Write-Log "  - Local settings match backup." }
+        }
+    }
+
     # 1. Settings Files
     foreach ($file in $Script:Config.SettingsFiles) {
         if ($Restore) { 
@@ -334,10 +372,27 @@ function Invoke-Sync {
     $extPath = Join-Path $targetPath $SourceEnv.ExtFile
     if ($Restore) {
         if (Test-Path $extPath) {
-            $exts = Get-Content $extPath | Where-Object { $_.Trim() }
-            Write-Log "  Found $($exts.Count) extensions."
+            $backupExts = Get-Content $extPath | Where-Object { $_.Trim() }
+            Write-Log "  Found $($backupExts.Count) extensions in backup."
+            
+            # Check for local extensions not in backup
+            $localExts = Run-Antigravity "--list-extensions" $SourceEnv
+            if ($LASTEXITCODE -eq 0 -and $localExts) {
+                $localExtsStrings = $localExts | Where-Object { $_ -is [string] -and $_.Trim() }
+                $newLocal = Compare-Object $backupExts $localExtsStrings | Where-Object { $_.SideIndicator -eq '=>' } | Select-Object -ExpandProperty InputObject
+                if ($newLocal) {
+                    Write-Log "Warning: The following local extensions are NOT in the backup being restored:" -Level Warning
+                    $newLocal | ForEach-Object { Write-Host "  - $_" -ForegroundColor Yellow }
+                    Write-Log "Restoring may cause inconsistencies if these are not backed up. It's recommended to create a new backup first." -Level Warning
+                    if ((Read-Host "Create a new backup instead? (y/n)") -eq 'y') {
+                        Write-Log "Aborting restore. Please run the script with -Action backup" -Level Info
+                        return
+                    }
+                }
+            }
+
             if ($Force -or (Read-Host "  Reinstall extensions for $envName? (y/n)") -eq 'y') {
-                foreach ($ext in $exts) {
+                foreach ($ext in $backupExts) {
                     Write-Progress -Activity "Installing for $envName" -Status $ext
                     Run-Antigravity "--install-extension $ext" $SourceEnv | Out-Null
                 }
@@ -374,10 +429,13 @@ try {
 
     if ($Action -eq "restore") {
         # Select version if multiple exist
-        $backups = Get-ChildItem $Script:Config.BaseBackupPath -Directory | Sort-Object Name -Descending
+        $backups = Get-ChildItem $Script:Config.BaseBackupPath -Directory | Sort-Object LastWriteTime -Descending
         if ($backups.Count -gt 1 -and !$Force) {
             Write-Log "Select backup to restore:"
-            for ($i = 0; $i -lt $backups.Count; $i++) { Write-Host "  [$i] $($backups[$i].Name)" }
+            for ($i = 0; $i -lt $backups.Count; $i++) { 
+                $dateStr = $backups[$i].LastWriteTime.ToString("yyyy-MM-dd HH:mm")
+                Write-Host "  [$i] $($backups[$i].Name) (Modified: $dateStr)" 
+            }
             $sel = Read-Host "Choice"
             if ($sel -match '^\d+$' -and $sel -lt $backups.Count) { $backupRoot = $backups[$sel].FullName }
         }
@@ -395,6 +453,22 @@ try {
     if ($Action -eq "backup") {
         if ($Force -or (Read-Host "Push changes to Git? (y/n)") -eq 'y') {
             Invoke-GitSync -Path $Script:Config.BaseBackupPath -Action push
+        }
+        
+        # 4. Pruning Policy (for versioned backups)
+        if ($Versioned) {
+            Write-Log "Checking for old backups to prune..."
+            $retentionDays = 30
+            $oldBackups = Get-ChildItem $Script:Config.BaseBackupPath -Directory | 
+                Where-Object { $_.Name -match "^$machineName\_" -and $_.LastWriteTime -lt (Get-Date).AddDays(-$retentionDays) }
+            
+            if ($oldBackups) {
+                Write-Log "Found $($oldBackups.Count) backups older than $retentionDays days."
+                if ($Force -or (Read-Host "Prune old backups? (y/n)") -eq 'y') {
+                    $oldBackups | Remove-Item -Recurse -Force
+                    Write-Log "  Old backups pruned." -Level Success
+                }
+            }
         }
     }
 

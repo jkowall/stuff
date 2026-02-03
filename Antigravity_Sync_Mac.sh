@@ -15,6 +15,20 @@ BASE_BACKUP_DIR="$RAW_PATH"
 HOSTNAME=$(hostname)
 BACKUP_DIR_DEFAULT="$BASE_BACKUP_DIR/$HOSTNAME"
 
+# Parse flags
+VERSIONED=false
+for arg in "$@"; do
+    if [[ "$arg" == "-v" || "$arg" == "--versioned" ]]; then
+        VERSIONED=true
+    fi
+done
+
+# CLI Check
+if ! command -v antigravity &> /dev/null; then
+    echo -e "\033[31mError: 'antigravity' CLI not found. Please ensure it is installed and in your PATH.\033[0m"
+    exit 1
+fi
+
 # Function to display interactive menu
 show_menu() {
     local title=$1
@@ -105,21 +119,27 @@ choice=$((choice_idx + 1))
 if [[ $choice -eq 2 ]]; then
     # List available machine backups
     echo "Available machine backups in $BASE_BACKUP_DIR:"
-    machine_options=()
+    machine_paths=()
+    machine_display=()
     # In zsh, find output can be loaded into array
     for d in "$BASE_BACKUP_DIR"/*(N/); do
-        machine_options+=("$(basename "$d")")
+        mod_date=$(stat -f "%Sm" -t "%Y-%m-%d %H:%M" "$d")
+        machine_paths+=("$d")
+        machine_display+=("$(basename "$d") (Last Modified: $mod_date)")
     done
     
-    if [[ ${#machine_options[@]} -eq 0 ]]; then
+    if [[ ${#machine_paths[@]} -eq 0 ]]; then
         echo "No backups found. Defaulting to $BACKUP_DIR_DEFAULT"
         BACKUP_DIR="$BACKUP_DIR_DEFAULT"
     else
-        show_menu "Select Machine to Restore From" "${machine_options[@]}"
+        show_menu "Select Backup to Restore" "${machine_display[@]}"
         machine_idx=$?
-        BACKUP_DIR="$BASE_BACKUP_DIR/${machine_options[$((machine_idx + 1))]}"
+        BACKUP_DIR="${machine_paths[$((machine_idx + 1))]}"
     fi
 else
+    if [[ "$VERSIONED" == "true" ]]; then
+        BACKUP_DIR_DEFAULT="$BASE_BACKUP_DIR/${HOSTNAME}_$(date +%Y%m%d_%H%M%S)"
+    fi
     echo "Enter the full path for the backup folder (default: $BACKUP_DIR_DEFAULT):"
     read input_dir
     BACKUP_DIR="${input_dir:-$BACKUP_DIR_DEFAULT}"
@@ -158,9 +178,56 @@ if [[ $choice -eq 1 ]]; then
         git_sync_push
     fi
 
+    # 4. Pruning Policy (for versioned backups)
+    if [[ "$VERSIONED" == "true" ]]; then
+        echo "Checking for old backups to prune..."
+        RETENTION_DAYS=30
+        # Find directories starting with HOSTNAME_ that are older than 30 days
+        OLD_BACKUPS=()
+        while IFS= read -r d; do
+            OLD_BACKUPS+=("$d")
+        done < <(find "$BASE_BACKUP_DIR" -maxdepth 1 -type d -name "${HOSTNAME}_*" -mtime +$RETENTION_DAYS)
+
+        if [[ ${#OLD_BACKUPS[@]} -gt 0 ]]; then
+            echo "Found ${#OLD_BACKUPS[@]} backups older than $RETENTION_DAYS days."
+            read -q "prune_choice?Prune old backups? (y/n): "
+            echo
+            if [[ $prune_choice == "y" || $prune_choice == "Y" ]]; then
+                for d in "${OLD_BACKUPS[@]}"; do
+                    rm -rf "$d"
+                    echo "  - Deleted: $(basename "$d")"
+                done
+                echo "Old backups pruned."
+            fi
+        fi
+    fi
+
 elif [[ $choice -eq 2 ]]; then
     echo "Starting Restore from $BACKUP_DIR..."
     
+    # 1. Pre-restore Backup (Safety Net)
+    PRE_RESTORE_DIR="$BASE_BACKUP_DIR/pre_restore_backup_$(date +%Y%m%d_%H%M%S)"
+    echo "Creating safety backup of current local settings to $PRE_RESTORE_DIR..."
+    mkdir -p "$PRE_RESTORE_DIR"
+    [[ -f "$MAC_SETTINGS/settings.json" ]] && cp "$MAC_SETTINGS/settings.json" "$PRE_RESTORE_DIR/"
+    [[ -f "$MAC_SETTINGS/keybindings.json" ]] && cp "$MAC_SETTINGS/keybindings.json" "$PRE_RESTORE_DIR/"
+    [[ -d "$GLOBAL_RULES" ]] && cp -R "$GLOBAL_RULES" "$PRE_RESTORE_DIR/"
+
+    # 2. Settings Diff Preview
+    if [[ -f "$BACKUP_DIR/settings.json" && -f "$MAC_SETTINGS/settings.json" ]]; then
+        echo "Changes detected in settings.json (Local vs Backup):"
+        if ! diff --brief "$MAC_SETTINGS/settings.json" "$BACKUP_DIR/settings.json" > /dev/null; then
+            read -q "show_diff?Preview settings changes? (y/n): "
+            echo
+            if [[ $show_diff == "y" || $show_diff == "Y" ]]; then
+                diff -u "$MAC_SETTINGS/settings.json" "$BACKUP_DIR/settings.json" | head -n 30
+                echo "..."
+            fi
+        else
+            echo "  - Local settings match backup."
+        fi
+    fi
+
     if [[ -f "$BACKUP_DIR/settings.json" ]]; then
         mkdir -p "$MAC_SETTINGS"
         cp "$BACKUP_DIR/settings.json" "$MAC_SETTINGS/"
@@ -195,6 +262,23 @@ elif [[ $choice -eq 2 ]]; then
     done
 
     if [[ -n "$EXT_TO_RESTORE" ]]; then
+        # Check for local extensions not in backup
+        local_exts=$(antigravity --list-extensions 2>/dev/null | tr -d '\r' | sort)
+        backup_exts=$(cat "$EXT_TO_RESTORE" | tr -d '\r' | sort)
+        new_local_exts=$(comm -23 <(echo "$local_exts") <(echo "$backup_exts") | grep -v "^$")
+
+        if [[ -n "$new_local_exts" ]]; then
+            echo -e "\033[33mWarning: The following local extensions are NOT in the backup being restored:\033[0m"
+            echo "$new_local_exts" | sed 's/^/  - /'
+            echo "Restoring may cause inconsistencies if these are not backed up. It's recommended to create a new backup first."
+            read -q "sync_backup?Create a new backup instead? (y/n): "
+            echo
+            if [[ $sync_backup == "y" || $sync_backup == "Y" ]]; then
+                echo "Aborting restore. Please run the script and select 'Backup'."
+                exit 0
+            fi
+        fi
+
         read -q "install_choice?Reinstall all extensions from list? (y/n): "
         echo
         if [[ $install_choice == "y" || $install_choice == "Y" ]]; then

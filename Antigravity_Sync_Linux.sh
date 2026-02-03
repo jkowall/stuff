@@ -16,6 +16,12 @@ BASE_BACKUP_DIR="$RAW_PATH"
 HOSTNAME=$(hostname)
 BACKUP_DIR_DEFAULT="$BASE_BACKUP_DIR/$HOSTNAME"
 
+# CLI Check
+if ! command -v antigravity &> /dev/null; then
+    echo -e "\033[31mError: 'antigravity' CLI not found. Please ensure it is installed and in your PATH.\033[0m"
+    exit 1
+fi
+
 # Function to display interactive menu (Bash compatible)
 show_menu() {
     local title=$1
@@ -107,18 +113,22 @@ choice=$((choice_idx + 1))
 if [[ $choice -eq 2 ]]; then
     # List available machine backups
     echo "Available machine backups in $BASE_BACKUP_DIR:"
-    machine_options=()
+    machine_paths=()
+    machine_display=()
     while IFS= read -r d; do
-        machine_options+=("$(basename "$d")")
+        # Use date command on the modification time
+        mod_date=$(date -r "$d" "+%Y-%m-%d %H:%M" 2>/dev/null || echo "Unknown Date")
+        machine_paths+=("$d")
+        machine_display+=("$(basename "$d") (Last Modified: $mod_date)")
     done < <(find "$BASE_BACKUP_DIR" -maxdepth 1 -type d ! -path "$BASE_BACKUP_DIR" ! -path "*/.*")
     
-    if [[ ${#machine_options[@]} -eq 0 ]]; then
+    if [[ ${#machine_paths[@]} -eq 0 ]]; then
         echo "No backups found. Defaulting to $BACKUP_DIR_DEFAULT"
         BACKUP_DIR="$BACKUP_DIR_DEFAULT"
     else
-        show_menu "Select Machine to Restore From" "${machine_options[@]}"
+        show_menu "Select Backup to Restore" "${machine_display[@]}"
         machine_idx=$?
-        BACKUP_DIR="$BASE_BACKUP_DIR/${machine_options[$machine_idx]}"
+        BACKUP_DIR="${machine_paths[$machine_idx]}"
     fi
 else
     echo "Enter the full path (default: $BACKUP_DIR_DEFAULT):"
@@ -178,6 +188,30 @@ if [[ $choice -eq 1 ]]; then
 elif [[ $choice -eq 2 ]]; then
     echo "Starting Restore from $BACKUP_DIR..."
     
+    # 1. Pre-restore Backup (Safety Net)
+    PRE_RESTORE_DIR="$BASE_BACKUP_DIR/pre_restore_backup_$(date +%Y%m%d_%H%M%S)"
+    echo "Creating safety backup of current local settings to $PRE_RESTORE_DIR..."
+    mkdir -p "$PRE_RESTORE_DIR"
+    [[ -f "$LINUX_SETTINGS/settings.json" ]] && cp "$LINUX_SETTINGS/settings.json" "$PRE_RESTORE_DIR/"
+    [[ -f "$LINUX_SETTINGS/keybindings.json" ]] && cp "$LINUX_SETTINGS/keybindings.json" "$PRE_RESTORE_DIR/"
+    [[ -d "$GLOBAL_RULES" ]] && cp -a "$GLOBAL_RULES" "$PRE_RESTORE_DIR/"
+
+    # 2. Settings Diff Preview
+    if [[ -f "$BACKUP_DIR/settings.json" && -f "$LINUX_SETTINGS/settings.json" ]]; then
+        echo "Changes detected in settings.json (Local vs Backup):"
+        if ! diff --brief "$LINUX_SETTINGS/settings.json" "$BACKUP_DIR/settings.json" > /dev/null; then
+            echo -n "Preview settings changes? (y/n): "
+            read -n 1 -r show_diff
+            echo
+            if [[ $show_diff == "y" || $show_diff == "Y" ]]; then
+                diff -u "$LINUX_SETTINGS/settings.json" "$BACKUP_DIR/settings.json" | head -n 30
+                echo "..."
+            fi
+        else
+            echo "  - Local settings match backup."
+        fi
+    fi
+
     if [[ -f "$BACKUP_DIR/settings.json" ]]; then
         mkdir -p "$LINUX_SETTINGS"
         cp "$BACKUP_DIR/settings.json" "$LINUX_SETTINGS/"
@@ -223,6 +257,24 @@ elif [[ $choice -eq 2 ]]; then
     fi
 
     if [[ -n "$EXT_TO_RESTORE" ]]; then
+        # Check for local extensions not in backup
+        local_exts=$(antigravity --list-extensions 2>/dev/null | tr -d '\r' | sort)
+        backup_exts=$(cat "$EXT_TO_RESTORE" | tr -d '\r' | sort)
+        new_local_exts=$(comm -23 <(echo "$local_exts") <(echo "$backup_exts") | grep -v "^$")
+
+        if [[ -n "$new_local_exts" ]]; then
+            echo -e "\033[33mWarning: The following local extensions are NOT in the backup being restored:\033[0m"
+            echo "$new_local_exts" | sed 's/^/  - /'
+            echo "Restoring may cause inconsistencies if these are not backed up. It's recommended to create a new backup first."
+            echo -n "Create a new backup instead? (y/n): "
+            read -n 1 -r sync_backup
+            echo
+            if [[ $sync_backup == "y" || $sync_backup == "Y" ]]; then
+                echo "Aborting restore. Please run the script and select 'Backup'."
+                exit 0
+            fi
+        fi
+
         echo -n "Reinstall all extensions from list? (y/n): "
         read -n 1 -r install_choice
         echo

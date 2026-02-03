@@ -40,8 +40,17 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 - **`Update-AllPackages.ps1`** - Main package update script, creates timestamped `.log` files
 - **`plex_backup.ps1`** - Requires admin privileges, stops Plex services during backup
 - **`Update-CloudflareDNS.ps1`** - Makes external API calls to Cloudflare
+- **`Antigravity_Sync_*`** - Cross-platform sync suite (Win/Mac/Linux) with versioning, safety backups, and extension reconciliation.
 
 ## Coding Guidelines
+
+### Common Patterns across Sync Scripts
+
+1. **Pre-restore Safety**: Always implement a "safety backup" of current local settings before performing a restoration.
+2. **Interactive Menus**: Use arrow-key navigable menus for action selection and backup choice.
+3. **CLI Verification**: Check for the presence of required CLIs (like `antigravity`) before execution.
+4. **Versioning & Pruning**: Support timestamped folder creation (e.g., `-v` flag) paired with a 30-day auto-pruning logic for maintenance.
+5. **Diff Preview**: Offer users a logic-based comparison (diff) of settings files before overwriting local data.
 
 ### PowerShell Scripts
 
