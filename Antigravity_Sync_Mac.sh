@@ -19,8 +19,8 @@ BACKUP_DIR_DEFAULT="$BASE_BACKUP_DIR/$HOSTNAME"
 show_menu() {
     local title=$1
     shift
-    local options=("$@")
-    local count=${#options[@]}
+    local menu_options=("$@")
+    local count=${#menu_options[@]}
     local selected=1  # zsh arrays are 1-indexed
     local key
 
@@ -34,9 +34,9 @@ show_menu() {
         # zsh arrays are 1-indexed, so loop from 1 to count
         for i in {1..$count}; do
             if [[ $i -eq $selected ]]; then
-                echo -e "\033[32m > ${options[$i]}\033[0m"
+                echo -e "\033[32m > ${menu_options[$i]}\033[0m"
             else
-                echo "   ${options[$i]}"
+                echo "   ${menu_options[$i]}"
             fi
         done
 
@@ -105,19 +105,19 @@ choice=$((choice_idx + 1))
 if [[ $choice -eq 2 ]]; then
     # List available machine backups
     echo "Available machine backups in $BASE_BACKUP_DIR:"
-    options=()
+    machine_options=()
     # In zsh, find output can be loaded into array
     for d in "$BASE_BACKUP_DIR"/*(N/); do
-        options+=("$(basename "$d")")
+        machine_options+=("$(basename "$d")")
     done
     
-    if [[ ${#options[@]} -eq 0 ]]; then
+    if [[ ${#machine_options[@]} -eq 0 ]]; then
         echo "No backups found. Defaulting to $BACKUP_DIR_DEFAULT"
         BACKUP_DIR="$BACKUP_DIR_DEFAULT"
     else
-        show_menu "Select Machine to Restore From" "${options[@]}"
+        show_menu "Select Machine to Restore From" "${machine_options[@]}"
         machine_idx=$?
-        BACKUP_DIR="$BASE_BACKUP_DIR/${options[$((machine_idx + 1))]}"
+        BACKUP_DIR="$BASE_BACKUP_DIR/${machine_options[$((machine_idx + 1))]}"
     fi
 else
     echo "Enter the full path for the backup folder (default: $BACKUP_DIR_DEFAULT):"
