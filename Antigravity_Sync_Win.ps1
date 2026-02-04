@@ -323,9 +323,9 @@ function Invoke-Sync {
         # Prune to keep only 2 most recent backups
         if (Test-Path $preRestoreRoot) {
             $oldBackups = Get-ChildItem $preRestoreRoot -Directory | 
-                Where-Object { $_.Name -like "backup_*" } | 
-                Sort-Object LastWriteTime -Descending | 
-                Select-Object -Skip 2
+            Where-Object { $_.Name -like "backup_*" } | 
+            Sort-Object LastWriteTime -Descending | 
+            Select-Object -Skip 2
             
             if ($oldBackups) {
                 Write-Log "Pruning old pre-restore backups..."
@@ -421,9 +421,19 @@ function Invoke-Sync {
     }
     
     # 3. Extensions
-    $extPath = Join-Path $targetPath $SourceEnv.ExtFile
+    # For restore: check multiple possible extension file names for cross-platform compatibility
+    $extPath = $null
     if ($Restore) {
-        if (Test-Path $extPath) {
+        $possibleExtFiles = @("extensions_mac.txt", "extensions.txt", "extensions_linux.txt", "extensions_wsl.txt")
+        foreach ($f in $possibleExtFiles) {
+            $testPath = Join-Path $targetPath $f
+            if (Test-Path $testPath) {
+                $extPath = $testPath
+                Write-Log "  Found extension list: $f"
+                break
+            }
+        }
+        if ($extPath) {
             $backupExts = Get-Content $extPath | Where-Object { $_.Trim() }
             Write-Log "  Found $($backupExts.Count) extensions in backup."
             
@@ -453,6 +463,8 @@ function Invoke-Sync {
         }
     }
     else {
+        # For backup: use the environment-specific extension file name
+        $extPath = Join-Path $targetPath $SourceEnv.ExtFile
         $exts = Run-Antigravity "--list-extensions" $SourceEnv
         if ($LASTEXITCODE -eq 0 -and $exts) {
             $extStrings = $exts | Where-Object { $_ -is [string] -and $_.Trim() }
@@ -512,7 +524,7 @@ try {
             Write-Log "Checking for old backups to prune..."
             $retentionDays = 30
             $oldBackups = Get-ChildItem $Script:Config.BaseBackupPath -Directory | 
-                Where-Object { $_.Name -match "^$machineName\_" -and $_.LastWriteTime -lt (Get-Date).AddDays(-$retentionDays) }
+            Where-Object { $_.Name -match "^$machineName\_" -and $_.LastWriteTime -lt (Get-Date).AddDays(-$retentionDays) }
             
             if ($oldBackups) {
                 Write-Log "Found $($oldBackups.Count) backups older than $retentionDays days."
