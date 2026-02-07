@@ -36,8 +36,9 @@ set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}" .sh)"
+MACHINE_NAME=$(hostname -s)
 TIMESTAMP=$(date +"%Y-%m-%d_%H-%M")
-LOG_FILE="${SCRIPT_DIR}/${SCRIPT_NAME}_${TIMESTAMP}.log"
+LOG_FILE="${SCRIPT_DIR}/${SCRIPT_NAME}_${MACHINE_NAME}_${TIMESTAMP}.log"
 
 # Parse command-line flags
 SKIP_BREW=false

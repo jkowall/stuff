@@ -23,8 +23,9 @@ param(
 
 $ScriptDir = $PSScriptRoot
 $ScriptName = [System.IO.Path]::GetFileNameWithoutExtension($PSCommandPath)
+$MachineName = $env:COMPUTERNAME
 $Timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm"
-$LogFile = Join-Path $ScriptDir "${ScriptName}_$Timestamp.log"
+$LogFile = Join-Path $ScriptDir "${ScriptName}_${MachineName}_$Timestamp.log"
 
 # Track results for summary
 $Results = @{
