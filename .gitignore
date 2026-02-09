@@ -6,3 +6,7 @@ Update-CloudflareDNS.json
 Antigravity_Sync_Win.json
 Antigravity_Sync_Mac.json
 plex_backup.json
+
+# macOS metadata and local artifacts
+.DS_Store
+cookies.txt

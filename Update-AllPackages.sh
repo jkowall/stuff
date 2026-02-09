@@ -172,6 +172,9 @@ update_npm() {
     write_log "Checking for outdated packages..." Info
     npm outdated -g 2>&1 | tee -a "$LOG_FILE" || true
     
+    write_log "Running: npm install -g npm@latest" Info
+    npm install -g npm@latest 2>&1 | tee -a "$LOG_FILE" || true
+    
     write_log "Running: npm update -g" Info
     if npm update -g 2>&1 | tee -a "$LOG_FILE"; then
         write_log "npm global updates completed successfully" Success
