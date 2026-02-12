@@ -17,33 +17,55 @@ A collection of PowerShell and shell scripts for system automation, backup, and 
 Antigravity Sync scripts provide a unified way to manage your IDE configuration across Windows, macOS, and Linux.
 
 **Key Features:**
+
 - **Cross-Platform Parity**: Identical feature set across all supported operating systems.
 - **Versioned Backups**: Use the `-v` (Mac/Linux) or `-Versioned` (Windows) flag to create timestamped snapshots instead of overwriting the default local backup.
 - **Automated Pruning**: Automatically offers to delete versioned backups older than 30 days to save space.
-- **Safety First**: 
-    - **Pre-restore Backups**: Every restore operation automatically creates a "safety" backup of your current local state before applying changes.
-    - **Settings Diff Preview**: Displays differences between your local `settings.json` and the backup, allowing you to preview changes before they are applied.
+- **Safety First**:
+  - **Pre-restore Backups**: Every restore operation automatically creates a "safety" backup of your current local state before applying changes.
+  - **Settings Diff Preview**: Displays differences between your local `settings.json` and the backup, allowing you to preview changes before they are applied.
 - **Lean Sync (Whitelisting)**: Instead of excluding junk, the scripts use a strict whitelist for the `.gemini` directory. Only essential configuration (settings, MCP configs, user profiles) is synced, avoiding bloat from machine-specific AI indices (150MB+).
 - **Extension Reconciliation**: Compares locally installed extensions with the backup and warns you if you have local extensions that aren't backed up.
 - **Git Integration**: Optional prompt to pull latest changes from Git before sync and push updates after backup.
 
 | Script | Description |
 |--------|-------------|
-| [`Antigravity_Sync_Win.ps1`](Antigravity_Sync_Win.ps1) | Primary sync tool for Windows. Supports WSL environments and integrated Git sync. |
-| [`Antigravity_Sync_Mac.sh`](Antigravity_Sync_Mac.sh) | macOS implementation with feature parity and Git sync. |
-| [`Antigravity_Sync_Linux.sh`](Antigravity_Sync_Linux.sh) | Linux implementation with feature parity and Git sync. |
-| [`plex_backup.ps1`](plex_backup.ps1) | Backup Plex Media Server data and registry settings to a compressed 7z archive. Handles service stop/start automatically. |
+| [`Antigravity_Sync_Win.ps1`](backup/Antigravity_Sync_Win.ps1) | Primary sync tool for Windows. Supports WSL environments and integrated Git sync. |
+| [`Antigravity_Sync_Mac.sh`](backup/Antigravity_Sync_Mac.sh) | macOS implementation with feature parity and Git sync. |
+| [`Antigravity_Sync_Linux.sh`](backup/Antigravity_Sync_Linux.sh) | Linux implementation with feature parity and Git sync. |
+| [`plex_backup.ps1`](backup/plex_backup.ps1) | Backup Plex Media Server data and registry settings to a compressed 7z archive. Handles service stop/start automatically. |
 
 ### System Maintenance
 
 | Script | Description |
 |--------|-------------|
-| [`Update-AllPackages.ps1`](Update-AllPackages.ps1) | Weekly update script for winget, Chocolatey, and npm packages. Auto-schedules itself if missing. Logs output and shows toast notifications. |
-| [`Setup-PackageUpdateTasks.ps1`](Setup-PackageUpdateTasks.ps1) | Sets up a Windows Task Scheduler task to run `Update-AllPackages.ps1` weekly (Saturdays at 1 AM). |
-| [`Update-CloudflareDNS.ps1`](Update-CloudflareDNS.ps1) | Dynamic DNS updater for Cloudflare. Updates a DNS record with your current public IP address. |
-| [`clean_plex.ps1`](clean_plex.ps1) | Cleans up orphaned data, caches, logs, and temporary files in Plex Media Server. Triggers Plex's internal cleanup tasks via API. |
-| [`list_apps.ps1`](list_apps.ps1) | Lists installed applications from multiple sources: Registry, Microsoft Store, Winget, Chocolatey, Scoop, and npm. |
-| [`restart_camera_hub.ps1`](restart_camera_hub.ps1) | Restarts the Elgato Camera Hub application. |
+| [`Update-AllPackages.ps1`](system/Update-AllPackages.ps1) | Weekly update script for winget, Chocolatey, and npm packages. Auto-schedules itself if missing. Logs output and shows toast notifications. |
+| [`Update-AllPackages.sh`](system/Update-AllPackages.sh) | Linux/macOS equivalent for package updates. |
+| [`Setup-PackageUpdateTasks.ps1`](system/Setup-PackageUpdateTasks.ps1) | Sets up a Windows Task Scheduler task to run `Update-AllPackages.ps1` weekly (Saturdays at 1 AM). |
+| [`Update-CloudflareDNS.ps1`](system/Update-CloudflareDNS.ps1) | Dynamic DNS updater for Cloudflare. Updates a DNS record with your current public IP address. |
+| [`clean_plex.ps1`](system/clean_plex.ps1) | Cleans up orphaned data, caches, logs, and temporary files in Plex Media Server. Triggers Plex's internal cleanup tasks via API. |
+| [`list_apps.ps1`](system/list_apps.ps1) | Lists installed applications from multiple sources: Registry, Microsoft Store, Winget, Chocolatey, Scoop, and npm. |
+| [`restart_camera_hub.ps1`](system/restart_camera_hub.ps1) | Restarts the Elgato Camera Hub application. |
+
+### Finance Tools
+
+| Script | Description |
+|--------|-------------|
+| [`schwab_sync.py`](finance_tools/schwab_sync.py) | Synchronizes Schwab portfolio exports with Seeking Alpha and fetches recent news. Supports email reports and history tracking. |
+
+### Media Processing
+
+| Script | Description |
+|--------|-------------|
+| [`Convert-Mp4ToIg.ps1`](media/Convert-Mp4ToIg.ps1) | Batch converts MP4 files for Instagram (1080x1350 portrait format) using FFmpeg. |
+| [`instagram.ps1`](media/instagram.ps1) | Re-encodes videos for Instagram in a directory using FFmpeg. |
+| [`download.ps1`](media/download.ps1) | Downloads media from YouTube or SoundCloud using yt-dlp and scdl. |
+
+### Finance Tools
+
+| Script | Description |
+|--------|-------------|
+| [`schwab_sync.py`](finance_tools/schwab_sync.py) | Synchronizes Schwab portfolio exports with Seeking Alpha and fetches recent news. Supports email reports and history tracking. |
 
 ### Media Processing
 
@@ -70,6 +92,7 @@ Scripts that require personal configuration now use external JSON config files s
 ### Example Config Templates
 
 **Update-CloudflareDNS.json:**
+
 ```json
 {
     "ApiToken": "your-cloudflare-api-token",
@@ -80,6 +103,7 @@ Scripts that require personal configuration now use external JSON config files s
 ```
 
 **plex_backup.json:**
+
 ```json
 {
     "PlexDataPath": "D:\\plex",

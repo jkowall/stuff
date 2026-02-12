@@ -10,3 +10,11 @@ plex_backup.json
 # macOS metadata and local artifacts
 .DS_Store
 cookies.txt
+
+# Finance Tools
+finance_tools/*.csv
+!finance_tools/test_schwab_export.csv
+!finance_tools/seeking_alpha_import.csv
+finance_tools/*.html
+finance_tools/news_history.json
+finance_tools/config.json

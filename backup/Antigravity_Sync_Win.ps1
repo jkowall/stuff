@@ -1,0 +1,545 @@
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+    Backup and restore Antigravity settings, extensions, and global AI rules.
+
+.DESCRIPTION
+    A streamlined script to sync Antigravity IDE configuration across machines.
+    Supports Windows and WSL environments with robust directory mirroring.
+
+.PARAMETER Action
+    'backup' or 'restore'
+
+.PARAMETER Versioned
+    Creates timestamped backup (backup only)
+
+.PARAMETER LogFile
+    Path to log file (default: scriptname.log)
+
+.PARAMETER IncludeWSL
+    Enable WSL support (auto-detects default distro)
+
+.EXAMPLE
+    .\Antigravity_Sync_Win.ps1 -Action backup -IncludeWSL
+#>
+
+[CmdletBinding(SupportsShouldProcess = $true)]
+param (
+    [Parameter(Mandatory = $false, Position = 0)]
+    [ValidateSet("backup", "restore")]
+    [string]$Action,
+
+    [Parameter()]
+    [switch]$Versioned,
+
+    [Parameter()]
+    [string]$LogFile,
+
+    [Parameter()]
+    [switch]$Force,
+
+    [Parameter()]
+    [switch]$IncludeWSL,
+
+    [Parameter()]
+    [string]$WSLDistro
+)
+
+# Initialize LogFile if not set
+if (-not $LogFile) {
+    $scriptName = [System.IO.Path]::GetFileNameWithoutExtension($MyInvocation.MyCommand.Path)
+    $LogFile = Join-Path $PSScriptRoot "$scriptName.log"
+}
+
+#region Configuration
+# Load configuration from JSON file
+$ConfigPath = Join-Path $env:USERPROFILE "Private\Configs\Antigravity_Sync_Win.json"
+if (-not (Test-Path $ConfigPath)) {
+    Write-Error "Config file not found: $ConfigPath. Please create it with BaseBackupPath."
+    exit 1
+}
+$ConfigData = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+
+# Determine PreRestorePath (Default to D:\tmp if D exists, otherwise Temp)
+$defaultPreRestore = if (Test-Path "D:\") { "D:\tmp" } else { $env:TEMP }
+$preRestoreBase = if ($ConfigData.PreRestorePath) { $ConfigData.PreRestorePath } else { $defaultPreRestore }
+
+# CLI Check
+if (-not (Get-Command "antigravity" -ErrorAction SilentlyContinue)) {
+    Write-Host "Error: 'antigravity' CLI not found. Please ensure it is installed and in your PATH." -ForegroundColor Red
+    exit 1
+}
+
+$Script:Config = @{
+    BaseBackupPath = $ConfigData.BaseBackupPath
+    SettingsFiles  = @("settings.json", "keybindings.json")
+    Win            = @{
+        Name     = "Windows"
+        Settings = "$env:APPDATA\Antigravity\User"
+        Rules    = "$env:USERPROFILE\.gemini"
+        ExtFile  = "extensions.txt"
+        WSL      = $null
+    }
+}
+
+
+function Get-WSLConfig {
+    param([string]$DistroName)
+    $wslExe = Get-Command "wsl.exe" -ErrorAction SilentlyContinue
+    if (-not $wslExe) { return $null }
+    
+    try {
+        $rawOutput = wsl.exe --list --quiet 2>&1 | Out-String
+        $cleanOutput = $rawOutput -replace '\x00', ''
+        $distros = $cleanOutput -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+        
+        if (-not $distros) {
+            Write-Log "No WSL distributions found." -Level Warning
+            return $null
+        }
+        
+        if ($DistroName) { $target = $distros | Where-Object { $_ -eq $DistroName } | Select-Object -First 1 }
+        else { $target = $distros | Select-Object -First 1 }
+        
+        if (-not $target) {
+            Write-Log "WSL distro '$DistroName' not found. Available: $($distros -join ', ')" -Level Warning
+            return $null
+        }
+        
+        $user = (wsl.exe -d $target whoami 2>&1).Trim() -replace '\x00', ''
+        $wslHome = "\\wsl`$\$target\home\$user"
+        return @{
+            Name     = "WSL ($target)"
+            Settings = "$wslHome\.config\Antigravity\User"
+            Rules    = "$wslHome\.gemini"
+            ExtFile  = "extensions_wsl.txt"
+            WSL      = @{ Distro = $target; User = $user }
+        }
+    }
+    catch {
+        Write-Log "Error detecting WSL: $_" -Level Warning
+        return $null
+    }
+}
+
+function Get-MenuChoice {
+    param(
+        [string]$Title = "Select Action:",
+        [string[]]$Options = @("Backup", "Restore")
+    )
+    $selectedIndex = 0
+    $hostRaw = $Host.UI.RawUI
+    $origColor = $hostRaw.ForegroundColor
+    
+    while ($true) {
+        Clear-Host
+        Write-Host "=== $Title ===" -ForegroundColor Cyan
+        for ($i = 0; $i -lt $Options.Count; $i++) {
+            if ($i -eq $selectedIndex) {
+                Write-Host " > $($Options[$i])" -ForegroundColor Green
+            }
+            else {
+                Write-Host "   $($Options[$i])"
+            }
+        }
+        
+        $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        if ($key.VirtualKeyCode -eq 38) {
+            # Up Arrow
+            $selectedIndex = ($selectedIndex - 1 + $Options.Count) % $Options.Count
+        }
+        elseif ($key.VirtualKeyCode -eq 40) {
+            # Down Arrow
+            $selectedIndex = ($selectedIndex + 1) % $Options.Count
+        }
+        elseif ($key.VirtualKeyCode -eq 13) {
+            # Enter
+            return $Options[$selectedIndex].ToLower()
+        }
+        elseif ($key.VirtualKeyCode -eq 27) {
+            # Esc
+            exit 0
+        }
+    }
+}
+
+#endregion
+
+#region Helpers
+function Write-Log {
+    param([string]$Message, [ValidateSet("Info", "Success", "Warning", "Error")]$Level = "Info")
+    $logEntry = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [$Level] $Message"
+    $colors = @{ Info = "Cyan"; Success = "Green"; Warning = "Yellow"; Error = "Red" }
+    Write-Host $logEntry -ForegroundColor $colors[$Level]
+    if ($LogFile) { Add-Content -Path $LogFile -Value $logEntry -ErrorAction SilentlyContinue }
+}
+
+function Run-Antigravity {
+    param([string]$Command, [hashtable]$Env)
+    if ($Env.WSL) {
+        return wsl.exe -d $Env.WSL.Distro -- bash -c "antigravity $Command" 2>&1
+    }
+    return & antigravity $Command 2>&1
+}
+
+function Sync-Path {
+    param([string]$Source, [string]$Dest, [switch]$IsFile)
+    if (!(Test-Path $Source)) { return "Skipped (source not found)" }
+    
+    if ($IsFile) {
+        Copy-Item -Path $Source -Destination $Dest -Force -ErrorAction Stop
+        return "Success"
+    }
+    else {
+        # Check for WSL symlink to Windows
+        if ($Source -match '^\\\\wsl') {
+            $distro = $Source.Split('\')[3]
+            $target = @(wsl.exe -d $distro -- bash -c "readlink -f ~/.gemini" 2>&1) | Out-String
+            if ($target -match '/mnt/[a-z]/') { return "Skipped (symlinked to Windows)" }
+        }
+        
+        $parent = Split-Path -Parent $Dest
+        if (!(Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        
+        # Use a whitelist (Include) approach for a cleaner backup
+        $includeFiles = @("settings.json", "oauth_creds.json", "google_accounts.json", "GEMINI.md")
+        $includeAntigravity = @("mcp_config.json", "user_settings.pb", "browserAllowlist.txt", "browserOnboardingStatus.txt")
+        $includeDirs = @("knowledge", "scratch")
+
+        # Create target .gemini and antigravity dirs
+        if (!(Test-Path $Dest)) { New-Item -ItemType Directory -Path $Dest -Force | Out-Null }
+        $destAntigravity = Join-Path $Dest "antigravity"
+        if (!(Test-Path $destAntigravity)) { New-Item -ItemType Directory -Path $destAntigravity -Force | Out-Null }
+
+        # Sync Whitelist Files in .gemini root
+        foreach ($f in $includeFiles) {
+            $srcFile = Join-Path $Source $f
+            if (Test-Path $srcFile) { Copy-Item -Path $srcFile -Destination $Dest -Force }
+        }
+
+        # Sync Whitelist Files in antigravity subfolder
+        $srcAntigravity = Join-Path $Source "antigravity"
+        if (Test-Path $srcAntigravity) {
+            foreach ($f in $includeAntigravity) {
+                $srcFile = Join-Path $srcAntigravity $f
+                if (Test-Path $srcFile) { Copy-Item -Path $srcFile -Destination $destAntigravity -Force }
+            }
+            # Sync Whitelist Directories
+            foreach ($d in $includeDirs) {
+                $srcDir = Join-Path $srcAntigravity $d
+                if (Test-Path $srcDir) {
+                    $destDir = Join-Path $destAntigravity $d
+                    Copy-Item -Path $srcDir -Destination $destDir -Recurse -Force
+                }
+            }
+        }
+        
+        return "Success"
+    }
+}
+
+function Invoke-GitSync {
+    param([string]$Path, [ValidateSet("pull", "push")]$Action)
+    
+    Write-Log "Git ${Action}: Checking repository in $Path..."
+    
+    # Find Git root
+    $current = $Path
+    $repoRoot = $null
+    while ($current -and (Split-Path $current)) {
+        if (Test-Path (Join-Path $current ".git")) {
+            $repoRoot = $current
+            break
+        }
+        $current = Split-Path $current -Parent
+    }
+    
+    if (-not $repoRoot) {
+        Write-Log "  Warning: Backup path is not inside a Git repository." -Level Warning
+        return
+    }
+    
+    $prevDir = Get-Location
+    try {
+        Set-Location $repoRoot
+        if ($Action -eq "pull") {
+            Write-Log "  Pulling latest changes..."
+            & git pull --stat
+        }
+        else {
+            Write-Log "  Staging changes..."
+            & git add .
+            Write-Log "  Changes to be committed:"
+            & git status --short
+            & git commit -m "Auto-backup Antigravity settings: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+            Write-Log "  Pushing to remote..."
+            & git push
+        }
+    }
+    catch {
+        Write-Log "  Git $Action failed: $_" -Level Error
+    }
+    finally {
+        Set-Location $prevDir
+    }
+}
+#endregion
+
+#region Main Logic
+function Invoke-Sync {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param($SourceEnv, $BackupRoot, [switch]$Restore)
+    
+    $envName = $SourceEnv.Name
+    if ($Restore) { $targetPath = $BackupRoot }
+    else {
+        if ($SourceEnv.WSL) { $targetPath = Join-Path $BackupRoot "WSL_$($SourceEnv.WSL.Distro)" }
+        else { $targetPath = $BackupRoot }
+    }
+    
+    if (!$Restore -and !(Test-Path $targetPath)) { New-Item -ItemType Directory -Path $targetPath -Force | Out-Null }
+    
+    Write-Log "----------------------------------------"
+    Write-Log "$($Action.ToUpper())ing $envName..."
+    
+    if ($Restore) {
+        # 1. Pre-restore Backup (Safety Net)
+        # Move to a non-git directory (default D:\tmp or Temp) and keep only 2
+        $preRestoreRoot = Join-Path $preRestoreBase "antigravity_pre_restore"
+        $preRestoreDir = Join-Path $preRestoreRoot "backup_$((Get-Date).ToString('yyyyMMdd_HHmmss'))"
+        
+        Write-Log "Creating safety backup of current local settings to $preRestoreDir..."
+        New-Item -ItemType Directory -Path $preRestoreDir -Force | Out-Null
+        
+        foreach ($file in $Script:Config.SettingsFiles) {
+            $src = Join-Path $SourceEnv.Settings $file
+            if (Test-Path $src) { Copy-Item -Path $src -Destination $preRestoreDir -Force }
+        }
+        if (Test-Path $SourceEnv.Rules) {
+            $destRules = Join-Path $preRestoreDir ".gemini"
+            Copy-Item -Path $SourceEnv.Rules -Destination $destRules -Recurse -Force
+        }
+
+        # Prune to keep only 2 most recent backups
+        if (Test-Path $preRestoreRoot) {
+            $oldBackups = Get-ChildItem $preRestoreRoot -Directory | 
+            Where-Object { $_.Name -like "backup_*" } | 
+            Sort-Object LastWriteTime -Descending | 
+            Select-Object -Skip 2
+            
+            if ($oldBackups) {
+                Write-Log "Pruning old pre-restore backups..."
+                $oldBackups | Remove-Item -Recurse -Force
+            }
+        }
+
+        # 2. Settings Diff Preview
+        $localSettings = Join-Path $SourceEnv.Settings "settings.json"
+        $backupSettings = Join-Path $targetPath "settings.json"
+        if ((Test-Path $localSettings) -and (Test-Path $backupSettings)) {
+            $localContent = Get-Content $localSettings
+            $backupContent = Get-Content $backupSettings
+            $diff = Compare-Object $localContent $backupContent
+            if ($diff) {
+                Write-Log "Changes detected in settings.json (Local vs Backup)."
+                if ((Read-Host "Preview settings changes? (y/n)") -eq 'y') {
+                    $diff | Select-Object -First 20 | Out-String | Write-Host
+                }
+            }
+            else { Write-Log "  - Local settings match backup." }
+        }
+    }
+
+    # 1. Settings Files
+    foreach ($file in $Script:Config.SettingsFiles) {
+        if ($Restore) { 
+            $src = Join-Path $targetPath $file
+            $dst = Join-Path $SourceEnv.Settings $file
+        }
+        else {
+            $src = Join-Path $SourceEnv.Settings $file
+            $dst = $targetPath
+        }
+        
+        if ($PSCmdlet.ShouldProcess($src, "Sync to $dst")) {
+            try { 
+                $res = Sync-Path -Source $src -Dest $dst -IsFile
+                if ($res -eq "Success") { $level = "Success" } else { $level = "Warning" }
+                Write-Log "  Settings ($file): $res" -Level $level
+            }
+            catch { Write-Log "  Settings ($file): Error - $_" -Level Error }
+        }
+    }
+    
+    # 2. Global Rules (.gemini)
+    if ($Restore) {
+        $rulesSrc = Join-Path $targetPath ".gemini"
+        $rulesDst = $SourceEnv.Rules
+    }
+    else {
+        $rulesSrc = $SourceEnv.Rules
+        $rulesDst = Join-Path $targetPath ".gemini"
+    }
+    
+    if ($PSCmdlet.ShouldProcess($rulesSrc, "Sync to $rulesDst")) {
+        try {
+            $res = Sync-Path -Source $rulesSrc -Dest $rulesDst
+            if ($res -eq "Success") { $level = "Success" } else { $level = "Warning" }
+            Write-Log "  Rules (.gemini): $res" -Level $level
+        }
+        catch { Write-Log "  Rules (.gemini): Error - $_" -Level Error }
+    }
+
+    # 2.5 GEMINI.md (Special Handling)
+    # User requirement: Backup from WSL only, Restore to both Windows and WSL
+    $winGemini = Join-Path $Script:Config.Win.Rules "GEMINI.md"
+    $backupGemini = Join-Path $targetPath "GEMINI.md"
+
+    if ($Restore) {
+        if (Test-Path $backupGemini) {
+            # Restore to current environment (Win or WSL)
+            $res = Sync-Path -Source $backupGemini -Dest (Join-Path $SourceEnv.Rules "GEMINI.md") -IsFile
+            if ($res -eq "Success") { $level = "Success" } else { $level = "Warning" }
+            Write-Log "  GEMINI.md ($envName): $res" -Level $level
+            
+            # If we are restoring Windows, also ensure it goes to WSL if IncludeWSL is on (and vice-versa)
+            # However, Invoke-Sync is called per-environment, so it will naturally cover both if both are in $Envs.
+        }
+    }
+    else {
+        # Backup: Only if this is the WSL environment
+        if ($SourceEnv.WSL) {
+            $srcGemini = Join-Path $SourceEnv.Rules "GEMINI.md"
+            if (Test-Path $srcGemini) {
+                $res = Sync-Path -Source $srcGemini -Dest $backupGemini -IsFile
+                Write-Log "  GEMINI.md (WSL Export): $res" -Level Success
+            }
+            else {
+                Write-Log "  GEMINI.md: Not found in WSL" -Level Warning
+            }
+        }
+    }
+    
+    # 3. Extensions
+    # For restore: check multiple possible extension file names for cross-platform compatibility
+    $extPath = $null
+    if ($Restore) {
+        $possibleExtFiles = @("extensions_mac.txt", "extensions.txt", "extensions_linux.txt", "extensions_wsl.txt")
+        foreach ($f in $possibleExtFiles) {
+            $testPath = Join-Path $targetPath $f
+            if (Test-Path $testPath) {
+                $extPath = $testPath
+                Write-Log "  Found extension list: $f"
+                break
+            }
+        }
+        if ($extPath) {
+            $backupExts = Get-Content $extPath | Where-Object { $_.Trim() }
+            Write-Log "  Found $($backupExts.Count) extensions in backup."
+            
+            # Check for local extensions not in backup
+            $localExts = Run-Antigravity "--list-extensions" $SourceEnv
+            if ($LASTEXITCODE -eq 0 -and $localExts) {
+                $localExtsStrings = $localExts | Where-Object { $_ -is [string] -and $_.Trim() }
+                $newLocal = Compare-Object $backupExts $localExtsStrings | Where-Object { $_.SideIndicator -eq '=>' } | Select-Object -ExpandProperty InputObject
+                if ($newLocal) {
+                    Write-Log "Warning: The following local extensions are NOT in the backup being restored:" -Level Warning
+                    $newLocal | ForEach-Object { Write-Host "  - $_" -ForegroundColor Yellow }
+                    Write-Log "Restoring may cause inconsistencies if these are not backed up. It's recommended to create a new backup first." -Level Warning
+                    if ((Read-Host "Create a new backup instead? (y/n)") -eq 'y') {
+                        Write-Log "Aborting restore. Please run the script with -Action backup" -Level Info
+                        return
+                    }
+                }
+            }
+
+            if ($Force -or (Read-Host "  Reinstall extensions for $envName? (y/n)") -eq 'y') {
+                foreach ($ext in $backupExts) {
+                    Write-Progress -Activity "Installing for $envName" -Status $ext
+                    Run-Antigravity "--install-extension $ext" $SourceEnv | Out-Null
+                }
+                Write-Log "  Extensions: Reinstalled" -Level Success
+            }
+        }
+    }
+    else {
+        # For backup: use the environment-specific extension file name
+        $extPath = Join-Path $targetPath $SourceEnv.ExtFile
+        $exts = Run-Antigravity "--list-extensions" $SourceEnv
+        if ($LASTEXITCODE -eq 0 -and $exts) {
+            $extStrings = $exts | Where-Object { $_ -is [string] -and $_.Trim() }
+            $extStrings | Out-File -FilePath $extPath -Encoding UTF8 -Force
+            Write-Log "  Extensions: Exported $($extStrings.Count)" -Level Success
+        }
+        else { Write-Log "  Extensions: CLI failed or not found" -Level Warning }
+    }
+}
+
+try {
+    if (-not $Action) {
+        $Action = Get-MenuChoice
+    }
+
+    Write-Log "=== Antigravity Sync Started ==="
+    $machineName = $env:COMPUTERNAME
+    $timestamp = Get-Date -Format "yyyy-MM-dd_HHmmss"
+    if ($Versioned) { $subFolder = "${machineName}_${timestamp}" } else { $subFolder = $machineName }
+    $backupRoot = Join-Path $Script:Config.BaseBackupPath $subFolder
+    
+    # Pull latest settings from Git at the start of the script
+    if ($Force -or (Read-Host "Pull latest settings from Git? (y/n)") -eq 'y') {
+        Invoke-GitSync -Path $Script:Config.BaseBackupPath -Action pull
+    }
+
+    if ($Action -eq "restore") {
+        # Select version if multiple exist
+        $backups = Get-ChildItem $Script:Config.BaseBackupPath -Directory | Sort-Object LastWriteTime -Descending
+        if ($backups.Count -gt 1 -and !$Force) {
+            Write-Log "Select backup to restore:"
+            for ($i = 0; $i -lt $backups.Count; $i++) { 
+                $dateStr = $backups[$i].LastWriteTime.ToString("yyyy-MM-dd HH:mm")
+                Write-Host "  [$i] $($backups[$i].Name) (Modified: $dateStr)" 
+            }
+            $sel = Read-Host "Choice"
+            if ($sel -match '^\d+$' -and $sel -lt $backups.Count) { $backupRoot = $backups[$sel].FullName }
+        }
+    }
+
+    $Envs = @($Script:Config.Win)
+    if ($IncludeWSL) {
+        $wslEnv = Get-WSLConfig -DistroName $WSLDistro
+        if ($wslEnv) { $Envs += $wslEnv } else { Write-Log "WSL distro not found" -Level Warning }
+    }
+    
+    foreach ($env in $Envs) { Invoke-Sync -SourceEnv $env -BackupRoot $backupRoot -Restore:($Action -eq "restore") }
+    
+    # Prompt for Git Push
+    if ($Action -eq "backup") {
+        if ($Force -or (Read-Host "Push changes to Git? (y/n)") -eq 'y') {
+            Invoke-GitSync -Path $Script:Config.BaseBackupPath -Action push
+        }
+        
+        # 4. Pruning Policy (for versioned backups)
+        if ($Versioned) {
+            Write-Log "Checking for old backups to prune..."
+            $retentionDays = 30
+            $oldBackups = Get-ChildItem $Script:Config.BaseBackupPath -Directory | 
+            Where-Object { $_.Name -match "^$machineName\_" -and $_.LastWriteTime -lt (Get-Date).AddDays(-$retentionDays) }
+            
+            if ($oldBackups) {
+                Write-Log "Found $($oldBackups.Count) backups older than $retentionDays days."
+                if ($Force -or (Read-Host "Prune old backups? (y/n)") -eq 'y') {
+                    $oldBackups | Remove-Item -Recurse -Force
+                    Write-Log "  Old backups pruned." -Level Success
+                }
+            }
+        }
+    }
+
+    Write-Log "=== Sync Completed ===" -Level Success
+}
+catch {
+    Write-Log "Fatal error: $_" -Level Error
+    exit 1
+}
+#endregion
