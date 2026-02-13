@@ -14,12 +14,15 @@ param(
     [switch]$SkipAdminChocolatey,
     [switch]$SkipUserChocolatey,
     [switch]$SkipWinget,
-    [switch]$SkipNpm
+    [switch]$SkipNpm,
+    [switch]$Elevated
 )
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
+
+$IsAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 $ScriptDir = $PSScriptRoot
 $ScriptName = [System.IO.Path]::GetFileNameWithoutExtension($PSCommandPath)
@@ -56,10 +59,17 @@ function Write-Log {
         "Warning" { "Yellow" }
         "Error" { "Red" }
     }
+    
+    # Use Write-Host for console output. Transcript will capture this too.
     Write-Host $LogEntry -ForegroundColor $Color
     
-    # Append to log file
-    Add-Content -Path $LogFile -Value $LogEntry
+    # If transcript is not running, append to file manually as a backup
+    if (-not $script:TranscriptActive) {
+        try {
+            Add-Content -Path $LogFile -Value $LogEntry -ErrorAction SilentlyContinue
+        }
+        catch {}
+    }
 }
 
 function Show-ToastNotification {
@@ -136,11 +146,10 @@ function Update-Winget {
         $WingetPath = Get-Command winget -ErrorAction Stop
         Write-Log "Found winget at: $($WingetPath.Source)" -Level Info
         
-        # Run winget upgrade with --include-unknown
+        # Run winget upgrade directly to preserve progress bars
         Write-Log "Running: winget upgrade --all --include-unknown --accept-package-agreements --accept-source-agreements" -Level Info
         
-        $Output = & winget upgrade --all --include-unknown --accept-package-agreements --accept-source-agreements 2>&1
-        $Output | ForEach-Object { Write-Log $_ -Level Info }
+        & winget upgrade --all --include-unknown --accept-package-agreements --accept-source-agreements
         
         if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) {
             $script:Results.Winget.Status = "Success"
@@ -161,9 +170,9 @@ function Update-Winget {
     }
 }
 
-function Update-ChocolateyAdmin {
+function Update-Chocolatey {
     Write-Log "=" * 60 -Level Info
-    Write-Log "STARTING CHOCOLATEY ADMIN UPDATES" -Level Info
+    Write-Log "STARTING CHOCOLATEY UPDATES" -Level Info
     Write-Log "=" * 60 -Level Info
     
     try {
@@ -171,49 +180,20 @@ function Update-ChocolateyAdmin {
         $ChocoPath = Get-Command choco -ErrorAction Stop
         Write-Log "Found Chocolatey at: $($ChocoPath.Source)" -Level Info
         
-        # Check if running as admin
-        $IsAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        # Chocolatey admin upgrade
         
         if ($IsAdmin) {
-            Write-Log "Running as Administrator - executing choco upgrade directly" -Level Info
-            $Output = & choco upgrade all -y 2>&1
-            $Output | ForEach-Object { Write-Log $_ -Level Info }
+            Write-Log "Running choco upgrade..." -Level Info
+            & choco upgrade all -y
         }
         else {
-            Write-Log "Not running as Administrator - requesting elevation" -Level Warning
-            Write-Log "A UAC prompt will appear. Please approve to update admin-installed packages." -Level Warning
-            
-            # Create a temporary script to run elevated
-            $TempScript = Join-Path $env:TEMP "choco-admin-update.ps1"
-            $TempLog = Join-Path $env:TEMP "choco-admin-update.log"
-            
-            @"
-`$ErrorActionPreference = 'Continue'
-`$Output = & choco upgrade all -y 2>&1
-`$Output | Out-File -FilePath '$TempLog' -Encoding UTF8
-"@ | Out-File -FilePath $TempScript -Encoding UTF8
-            
-            $Process = Start-Process -FilePath "powershell.exe" `
-                -ArgumentList "-ExecutionPolicy Bypass -File `"$TempScript`"" `
-                -Verb RunAs `
-                -Wait `
-                -PassThru
-            
-            # Read and log the output
-            if (Test-Path $TempLog) {
-                Get-Content $TempLog | ForEach-Object { Write-Log $_ -Level Info }
-                Remove-Item $TempLog -Force -ErrorAction SilentlyContinue
-            }
-            Remove-Item $TempScript -Force -ErrorAction SilentlyContinue
-            
-            if ($Process.ExitCode -ne 0) {
-                throw "Elevated Chocolatey process exited with code: $($Process.ExitCode)"
-            }
+            Write-Log "ERROR: Update-ChocolateyAdmin called without Administrator privileges." -Level Error
+            throw "Elevation required for Chocolatey admin updates."
         }
         
         $script:Results.ChocolateyAdmin.Status = "Success"
-        $script:Results.ChocolateyAdmin.Message = "Chocolatey admin packages updated successfully"
-        Write-Log "Chocolatey admin updates completed successfully" -Level Success
+        $script:Results.ChocolateyAdmin.Message = "Chocolatey packages updated successfully"
+        Write-Log "Chocolatey updates completed successfully" -Level Success
     }
     catch {
         $script:Results.ChocolateyAdmin.Status = "Error"
@@ -223,39 +203,6 @@ function Update-ChocolateyAdmin {
     }
 }
 
-function Update-ChocolateyUser {
-    Write-Log "=" * 60 -Level Info
-    Write-Log "STARTING CHOCOLATEY USER UPDATES" -Level Info
-    Write-Log "=" * 60 -Level Info
-    
-    try {
-        # Check if choco is available
-        $ChocoPath = Get-Command choco -ErrorAction Stop
-        Write-Log "Found Chocolatey at: $($ChocoPath.Source)" -Level Info
-        
-        Write-Log "Running: choco upgrade all -y (as current user)" -Level Info
-        
-        $Output = & choco upgrade all -y 2>&1
-        $Output | ForEach-Object { Write-Log $_ -Level Info }
-        
-        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) {
-            $script:Results.ChocolateyUser.Status = "Success"
-            $script:Results.ChocolateyUser.Message = "Chocolatey user packages updated successfully"
-            Write-Log "Chocolatey user updates completed successfully" -Level Success
-        }
-        else {
-            $script:Results.ChocolateyUser.Status = "Warning"
-            $script:Results.ChocolateyUser.Message = "Chocolatey completed with exit code: $LASTEXITCODE"
-            Write-Log "Chocolatey completed with exit code: $LASTEXITCODE" -Level Warning
-        }
-    }
-    catch {
-        $script:Results.ChocolateyUser.Status = "Error"
-        $script:Results.ChocolateyUser.Message = $_.Exception.Message
-        Write-Log "Chocolatey user update failed: $($_.Exception.Message)" -Level Error
-        Show-ToastNotification -Title "Chocolatey User Update Failed" -Message $_.Exception.Message -Type Error
-    }
-}
 
 function Update-NpmGlobal {
     Write-Log "=" * 60 -Level Info
@@ -281,52 +228,16 @@ function Update-NpmGlobal {
         $NpmDir = Split-Path (Split-Path $NpmPath.Source -Parent) -Parent
         $RequiresAdmin = $NpmDir -like "*Program Files*"
         
-        # Check if running as admin
-        $IsAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        # Running npm update (using global $IsAdmin)
         
-        if ($RequiresAdmin -and -not $IsAdmin) {
-            Write-Log "npm is installed in Program Files - requires elevation" -Level Warning
-            Write-Log "A UAC prompt will appear. Please approve to update global npm packages." -Level Warning
+        Write-Log "Running npm update..." -Level Info
+        & npm update -g
             
-            # Create a temporary script to run elevated
-            $TempScript = Join-Path $env:TEMP "npm-global-update.ps1"
-            $TempLog = Join-Path $env:TEMP "npm-global-update.log"
-            
-            @"
-`$ErrorActionPreference = 'Continue'
-`$Output = & npm update -g 2>&1
-`$Output | Out-File -FilePath '$TempLog' -Encoding UTF8
-"@ | Out-File -FilePath $TempScript -Encoding UTF8
-            
-            $Process = Start-Process -FilePath "powershell.exe" `
-                -ArgumentList "-ExecutionPolicy Bypass -File `"$TempScript`"" `
-                -Verb RunAs `
-                -Wait `
-                -PassThru
-            
-            # Read and log the output
-            if (Test-Path $TempLog) {
-                Get-Content $TempLog | ForEach-Object { Write-Log $_ -Level Info }
-                Remove-Item $TempLog -Force -ErrorAction SilentlyContinue
-            }
-            Remove-Item $TempScript -Force -ErrorAction SilentlyContinue
-            
-            if ($Process.ExitCode -ne 0) {
-                throw "Elevated npm process exited with code: $($Process.ExitCode)"
-            }
-        }
-        else {
-            # Run directly (either already admin or npm is in user directory)
-            Write-Log "Running: npm update -g" -Level Info
-            $Output = & npm update -g 2>&1
-            $Output | ForEach-Object { Write-Log $_ -Level Info }
-            
-            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) {
-                $script:Results.Npm.Status = "Warning"
-                $script:Results.Npm.Message = "npm completed with exit code: $LASTEXITCODE"
-                Write-Log "npm completed with exit code: $LASTEXITCODE" -Level Warning
-                return
-            }
+        if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) {
+            $script:Results.Npm.Status = "Warning"
+            $script:Results.Npm.Message = "npm completed with exit code: $LASTEXITCODE"
+            Write-Log "npm completed with exit code: $LASTEXITCODE" -Level Warning
+            return
         }
         
         $script:Results.Npm.Status = "Success"
@@ -464,15 +375,21 @@ function Verify-ScheduledTask {
 # Set window title
 $Host.UI.RawUI.WindowTitle = "Package Updater - $Timestamp"
 
-# Initialize log
+# Initialize log with Transcript
+try {
+    Start-Transcript -Path $LogFile -Append -IncludeInvocationHeader -ErrorAction Stop
+    $script:TranscriptActive = $true
+}
+catch {
+    $script:TranscriptActive = $false
+}
+
 Write-Log "=" * 60 -Level Info
-Write-Log "PACKAGE UPDATE STARTED" -Level Info
+Write-Log "PACKAGE UPDATE STARTED (Elevated=$Elevated, Admin=$IsAdmin)" -Level Info
 Write-Log "Script Directory: $ScriptDir" -Level Info
 Write-Log "Log File: $LogFile" -Level Info
 Write-Log "=" * 60 -Level Info
 
-# Verify scheduling
-Verify-ScheduledTask
 
 # Clean up old log files (keep only 3 most recent)
 $LogPattern = Join-Path $ScriptDir "${ScriptName}_*.log"
@@ -490,40 +407,58 @@ if ($OldLogs) {
 # Show start notification
 Show-ToastNotification -Title "Package Updates Starting" -Message "Updating winget, Chocolatey, and npm packages..." -Type Info
 
-# Run updates
-if (-not $SkipWinget) {
-    Update-Winget
+# Handle split execution (User vs Elevated)
+
+if (-not $IsAdmin -and -not $Elevated) {
+    # Verify scheduling (only once in the main process)
+    Verify-ScheduledTask
+    
+    # 1. Run Other Non-Admin Tasks (if any)
+    # (Currently all tasks are moved to elevated to avoid warnings)
+    
+    # 2. Check if we need elevation for other tasks
+    $NeedsElevation = $false
+    if (-not $SkipWinget) { $NeedsElevation = $true }
+    if (-not $SkipAdminChocolatey) { $NeedsElevation = $true }
+    if (-not $SkipNpm) {
+        $NpmPath = Get-Command npm -ErrorAction SilentlyContinue
+        if ($NpmPath) {
+            $NpmDir = Split-Path (Split-Path $NpmPath.Source -Parent) -Parent
+            if ($NpmDir -like "*Program Files*") { $NeedsElevation = $true }
+        }
+    }
+
+    if ($NeedsElevation) {
+        Write-Log "Admin tasks pending. Requesting one-time elevation..." -Level Warning
+        
+        $RelaunchArgs = @("-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"", "-Elevated")
+        if ($SkipWinget) { $RelaunchArgs += "-SkipWinget" }
+        if ($SkipAdminChocolatey) { $RelaunchArgs += "-SkipAdminChocolatey" }
+        if ($SkipNpm) { $RelaunchArgs += "-SkipNpm" }
+        $RelaunchArgs += "-SkipUserChocolatey" # Handled in this process
+        
+        Start-Process "powershell.exe" -ArgumentList $RelaunchArgs -Verb RunAs -Wait
+    }
+}
+elseif ($Elevated -and -not $IsAdmin) {
+    Write-Log "ERROR: Elevated switch set but process is NOT running as Administrator." -Level Error
 }
 else {
-    Write-Log "Skipping Winget updates (flag set)" -Level Info
+    # Running as Admin (or explicitly requested elevated tasks)
+    if (-not $SkipWinget) { Update-Winget }
+    if (-not $SkipAdminChocolatey -or -not $SkipUserChocolatey) { Update-Chocolatey }
+    if (-not $SkipNpm) { Update-NpmGlobal }
 }
 
-if (-not $SkipAdminChocolatey) {
-    Update-ChocolateyAdmin
-}
-else {
-    Write-Log "Skipping Chocolatey admin updates (flag set)" -Level Info
+# Stop Transcript
+if ($script:TranscriptActive) {
+    try { Stop-Transcript -ErrorAction SilentlyContinue } catch {}
 }
 
-if (-not $SkipUserChocolatey) {
-    Update-ChocolateyUser
+if ($Elevated -or $IsAdmin) {
+    # Only show summary and completion wait in the "active" or final process
+    Show-Summary
+    Write-Log "" -Level Info
+    Write-Log "Update process completed. Press Enter to close this window..." -Level Info
+    Read-Host
 }
-else {
-    Write-Log "Skipping Chocolatey user updates (flag set)" -Level Info
-}
-
-if (-not $SkipNpm) {
-    Update-NpmGlobal
-}
-else {
-    Write-Log "Skipping npm updates (flag set)" -Level Info
-}
-
-# Show summary
-Show-Summary
-
-Write-Log "" -Level Info
-Write-Log "Update process completed. Press Enter to close this window..." -Level Info
-
-# Keep window open for review
-Read-Host
