@@ -206,11 +206,19 @@ verify_scheduling() {
 # MAIN EXECUTION
 # ============================================================================
 
-# Ensure log file exists
+# Ensure the script is running as root (self-elevate)
+if [ "$EUID" -ne 0 ]; then
+    echo "This script requires root privileges for package updates. Elevating..."
+    exec sudo "$0" "$@"
+fi
+
+# Ensure log file exists and is owned by the actual user if possible, 
+# but for simplicity in system scripts, root-owned logs in script dir is fine.
 touch "$LOG_FILE"
+chmod 666 "$LOG_FILE" 2>/dev/null 
 
 log "Info" "============================================================"
-log "Info" "PACKAGE UPDATE STARTED (User=$(whoami), Root=$([ "$EUID" -eq 0 ] && echo "Yes" || echo "No"))"
+log "Info" "PACKAGE UPDATE STARTED (User=$(whoami), ActualUser=${SUDO_USER:-$(whoami)})"
 log "Info" "Script Directory: $SCRIPT_DIR"
 log "Info" "Log File: $LOG_FILE"
 log "Info" "============================================================"
@@ -219,7 +227,14 @@ log "Info" "============================================================"
 cleanup_logs
 
 # Show start notification
-show_notification "Package Updates Starting" "Updating apt, snap, flatpak, and npm packages..." "low"
+# Note: notify-send as root needs to find the user session. 
+# We use SUDO_USER if available to try and show it on the correct desktop.
+if [ -n "$SUDO_USER" ]; then
+    sudo -u "$SUDO_USER" DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u "$SUDO_USER")/bus \
+    notify-send -u low "Package Updates" "Starting updates for apt, snap, flatpak, and npm..." 2>/dev/null
+else
+    show_notification "Package Updates Starting" "Updating apt, snap, flatpak, and npm packages..." "low"
+fi
 
 # Run Updates
 update_apt
@@ -230,7 +245,7 @@ update_npm
 # Summary
 show_summary
 
-# Scheduling (only if run as root/sudo the first time to ensure it can update crontab for system updates)
+# Scheduling
 verify_scheduling
 
 echo ""
@@ -239,3 +254,4 @@ log "Info" "Update process completed."
 if [ -t 0 ]; then
     read -p "Press Enter to close..."
 fi
+
