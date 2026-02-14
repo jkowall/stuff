@@ -309,12 +309,14 @@ function Verify-ScheduledTask {
                 return
             }
             Write-Log "Scheduled task '$TaskName' exists but configuration might be different. Recommended: Saturday at 1:00 AM." -Level Warning
+            # We found a task, so we don't need to prompt to create one.
+            return
         }
         else {
             Write-Log "Scheduled task '$TaskName' not found." -Level Warning
         }
 
-        # If we get here, the task is missing or misconfigured
+        # If we get here, the task is completely missing
         Write-Host ""
         Write-Host "--- SCHEDULED TASK SETUP ---" -ForegroundColor Cyan
         Write-Host "This script is not currently scheduled to run weekly."
