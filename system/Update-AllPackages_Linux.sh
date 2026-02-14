@@ -1,0 +1,241 @@
+#!/bin/bash
+
+# SYNOPSIS
+#     Weekly package update script for apt, snap, flatpak, and npm.
+# DESCRIPTION
+#     Updates all packages from apt, snap, flatpak, and npm global packages.
+#     Logs all output to a timestamped file and shows desktop notifications.
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}" .sh)"
+MACHINE_NAME="$(hostname)"
+TIMESTAMP="$(date +%Y-%m-%d_%H-%m)"
+LOG_FILE="${SCRIPT_DIR}/${SCRIPT_NAME}_${MACHINE_NAME}_${TIMESTAMP}.log"
+
+# Status tracking
+APT_STATUS="Skipped"
+SNAP_STATUS="Skipped"
+FLATPAK_STATUS="Skipped"
+NPM_STATUS="Skipped"
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+log() {
+    local level="$1"
+    local message="$2"
+    local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+    local color=""
+
+    case "$level" in
+        "Info")    color="\e[37m" ;; # White
+        "Success") color="\e[32m" ;; # Green
+        "Warning") color="\e[33m" ;; # Yellow
+        "Error")   color="\e[31m" ;; # Red
+        *)         color="\e[0m"  ;;
+    esac
+
+    local log_entry="[$timestamp] [$level] $message"
+    echo -e "${color}${log_entry}\e[0m"
+    echo "$log_entry" >> "$LOG_FILE"
+}
+
+show_notification() {
+    local title="$1"
+    local message="$2"
+    local type="$3" # low, normal, critical
+
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -u "$type" "$title" "$message"
+    else
+        log "Warning" "notify-send not found. Skipping desktop notification."
+    fi
+}
+
+update_apt() {
+    log "Info" "============================================================"
+    log "Info" "STARTING APT UPDATES"
+    log "Info" "============================================================"
+
+    if [ "$EUID" -ne 0 ]; then
+        log "Error" "Apt update requires root privileges. Please run with sudo."
+        APT_STATUS="Error"
+        return
+    fi
+
+    log "Info" "Running: apt update"
+    if apt-get update -y >> "$LOG_FILE" 2>&1; then
+        log "Info" "Running: apt upgrade -y"
+        if apt-get upgrade -y >> "$LOG_FILE" 2>&1; then
+            APT_STATUS="Success"
+            log "Success" "Apt updates completed successfully"
+        else
+            APT_STATUS="Warning"
+            log "Warning" "Apt upgrade encountered issues. Check log."
+        fi
+    else
+        APT_STATUS="Error"
+        log "Error" "Apt update failed."
+    fi
+}
+
+update_snap() {
+    if ! command -v snap >/dev/null 2>&1; then
+        log "Info" "Snap not installed. Skipping."
+        return
+    fi
+
+    log "Info" "============================================================"
+    log "Info" "STARTING SNAP UPDATES"
+    log "Info" "============================================================"
+
+    log "Info" "Running: snap refresh"
+    if snap refresh >> "$LOG_FILE" 2>&1; then
+        SNAP_STATUS="Success"
+        log "Success" "Snap updates completed successfully"
+    else
+        SNAP_STATUS="Warning"
+        log "Warning" "Snap refresh encountered issues."
+    fi
+}
+
+update_flatpak() {
+    if ! command -v flatpak >/dev/null 2>&1; then
+        log "Info" "Flatpak not installed. Skipping."
+        return
+    fi
+
+    log "Info" "============================================================"
+    log "Info" "STARTING FLATPAK UPDATES"
+    log "Info" "============================================================"
+
+    log "Info" "Running: flatpak update -y"
+    if flatpak update -y >> "$LOG_FILE" 2>&1; then
+        FLATPAK_STATUS="Success"
+        log "Success" "Flatpak updates completed successfully"
+    else
+        FLATPAK_STATUS="Warning"
+        log "Warning" "Flatpak update encountered issues."
+    fi
+}
+
+update_npm() {
+    if ! command -v npm >/dev/null 2>&1; then
+        log "Info" "NPM not installed. Skipping."
+        return
+    fi
+
+    log "Info" "============================================================"
+    log "Info" "STARTING NPM GLOBAL UPDATES"
+    log "Info" "============================================================"
+
+    log "Info" "Running: npm update -g"
+    if npm update -g >> "$LOG_FILE" 2>&1; then
+        NPM_STATUS="Success"
+        log "Success" "NPM global updates completed successfully"
+    else
+        NPM_STATUS="Warning"
+        log "Warning" "NPM update encountered issues."
+    fi
+}
+
+show_summary() {
+    echo ""
+    log "Info" "============================================================"
+    log "Info" "UPDATE SUMMARY"
+    log "Info" "============================================================"
+
+    local has_errors=false
+
+    echo -e "APT:      $APT_STATUS"
+    echo -e "SNAP:     $SNAP_STATUS"
+    echo -e "FLATPAK:  $FLATPAK_STATUS"
+    echo -e "NPM:      $NPM_STATUS"
+
+    if [[ "$APT_STATUS" == "Error" || "$SNAP_STATUS" == "Error" || "$FLATPAK_STATUS" == "Error" || "$NPM_STATUS" == "Error" ]]; then
+        has_errors=true
+    fi
+
+    log "Info" "============================================================"
+    log "Info" "Log file saved to: $LOG_FILE"
+
+    if [ "$has_errors" = true ]; then
+        show_notification "Package Updates Completed with Errors" "Check the log for details: $LOG_FILE" "critical"
+    else
+        show_notification "Package Updates Completed" "All package managers updated successfully!" "normal"
+    fi
+}
+
+cleanup_logs() {
+    log "Info" "Cleaning up old log files (keeping most recent 3)..."
+    ls -t "${SCRIPT_DIR}/${SCRIPT_NAME}_${MACHINE_NAME}_"*.log 2>/dev/null | tail -n +4 | xargs -r rm -f
+}
+
+verify_scheduling() {
+    if [ "$EUID" -ne 0 ]; then
+        return # Scheduling check usually for the user or if run with sudo
+    fi
+
+    local current_cron=$(crontab -l 2>/dev/null)
+    local script_path="$(realpath "$0")"
+    local cron_job="0 1 * * 6 $script_path >> /dev/null 2>&1"
+
+    if echo "$current_cron" | grep -q "$script_path"; then
+        log "Info" "Scheduled task is already configured in crontab."
+        return
+    fi
+
+    echo ""
+    echo -e "\e[36m--- SCHEDULED TASK SETUP ---\e[0m"
+    echo "This script is not currently scheduled to run weekly."
+    read -p "Would you like to schedule it to run every Saturday at 1:00 AM? (y/n): " choice
+
+    if [[ "$choice" == "y" || "$choice" == "Y" ]]; then
+        (crontab -l 2>/dev/null; echo "$cron_job") | crontab -
+        log "Success" "Scheduled task created in crontab!"
+        show_notification "Task Scheduled" "Weekly updates scheduled for Saturdays at 1:00 AM" "normal"
+    fi
+}
+
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
+
+# Ensure log file exists
+touch "$LOG_FILE"
+
+log "Info" "============================================================"
+log "Info" "PACKAGE UPDATE STARTED (User=$(whoami), Root=$([ "$EUID" -eq 0 ] && echo "Yes" || echo "No"))"
+log "Info" "Script Directory: $SCRIPT_DIR"
+log "Info" "Log File: $LOG_FILE"
+log "Info" "============================================================"
+
+# Cleanup
+cleanup_logs
+
+# Show start notification
+show_notification "Package Updates Starting" "Updating apt, snap, flatpak, and npm packages..." "low"
+
+# Run Updates
+update_apt
+update_snap
+update_flatpak
+update_npm
+
+# Summary
+show_summary
+
+# Scheduling (only if run as root/sudo the first time to ensure it can update crontab for system updates)
+verify_scheduling
+
+echo ""
+log "Info" "Update process completed."
+# No read-host equivalent usually needed in bash for non-interactive execution, but added for terminal clarity
+if [ -t 0 ]; then
+    read -p "Press Enter to close..."
+fi

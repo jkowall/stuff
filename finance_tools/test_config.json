@@ -1,0 +1,5 @@
+{
+    "output_csv": "config_test_output.csv",
+    "news_report": "config_test_report.html",
+    "history_file": "config_test_history.json"
+}

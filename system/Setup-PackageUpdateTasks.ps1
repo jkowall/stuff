@@ -23,7 +23,7 @@ param(
 
 $TaskName = "Weekly Package Updates"
 $ScriptDir = $PSScriptRoot
-$UpdateScript = Join-Path $ScriptDir "Update-AllPackages.ps1"
+$UpdateScript = Join-Path $ScriptDir "Update-AllPackages_Win.ps1"
 
 function Write-Status {
     param(
@@ -161,7 +161,7 @@ try {
     Write-Status "  Script: $UpdateScript" -Level Info
     Write-Status "" -Level Info
     Write-Status "To run the update manually, execute:" -Level Info
-    Write-Host "  .\Update-AllPackages.ps1" -ForegroundColor White
+    Write-Host "  .\Update-AllPackages_Win.ps1" -ForegroundColor White
     Write-Status "" -Level Info
     Write-Status "To remove this scheduled task, run:" -Level Info
     Write-Host "  .\Setup-PackageUpdateTasks.ps1 -Remove" -ForegroundColor White

@@ -39,9 +39,10 @@ Antigravity Sync scripts provide a unified way to manage your IDE configuration 
 
 | Script | Description |
 |--------|-------------|
-| [`Update-AllPackages.ps1`](system/Update-AllPackages.ps1) | Weekly update script for winget, Chocolatey, and npm packages. Auto-schedules itself if missing. Logs output and shows toast notifications. |
-| [`Update-AllPackages.sh`](system/Update-AllPackages.sh) | Linux/macOS equivalent for package updates. |
-| [`Setup-PackageUpdateTasks.ps1`](system/Setup-PackageUpdateTasks.ps1) | Sets up a Windows Task Scheduler task to run `Update-AllPackages.ps1` weekly (Saturdays at 1 AM). |
+| [`Update-AllPackages_Win.ps1`](system/Update-AllPackages_Win.ps1) | Weekly update script for winget, Chocolatey, and npm packages (Windows). |
+| [`Update-AllPackages_Linux.sh`](system/Update-AllPackages_Linux.sh) | Linux (Ubuntu) package updater (apt, snap, flatpak, npm). |
+| [`Update-AllPackages_Mac.sh`](system/Update-AllPackages_Mac.sh) | macOS package updater (brew, mas, npm). |
+| [`Setup-PackageUpdateTasks.ps1`](system/Setup-PackageUpdateTasks.ps1) | Sets up a Windows Task Scheduler task to run `Update-AllPackages_Win.ps1` weekly. |
 | [`Update-CloudflareDNS.ps1`](system/Update-CloudflareDNS.ps1) | Dynamic DNS updater for Cloudflare. Updates a DNS record with your current public IP address. |
 | [`clean_plex.ps1`](system/clean_plex.ps1) | Cleans up orphaned data, caches, logs, and temporary files in Plex Media Server. Triggers Plex's internal cleanup tasks via API. |
 | [`list_apps.ps1`](system/list_apps.ps1) | Lists installed applications from multiple sources: Registry, Microsoft Store, Winget, Chocolatey, Scoop, and npm. |
