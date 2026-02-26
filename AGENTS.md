@@ -1,15 +1,15 @@
 # AGENTS.md - AI Assistant Instructions
 
-This file provides instructions for AI coding assistants working with this repository.
+This file provides centralized instructions for all AI coding assistants working with this repository. Agent-specific files (`CLAUDE.md`, `GEMINI.md`) defer to this file.
 
 ## Repository Overview
 
-This is a personal scripts collection containing PowerShell (.ps1) and shell (.sh) scripts for:
-- System backup and sync
-- Package management automation
-- Media file processing
-- DNS management
-- Application utilities
+This is a personal scripts collection containing PowerShell (.ps1), shell (.sh), and Python (.py) scripts organized into subdirectories:
+
+- **`backup/`** - IDE configuration sync and Plex backup
+- **`system/`** - Package management, DNS updates, system maintenance
+- **`media/`** - Video conversion and media downloading
+- **`finance_tools/`** - Portfolio sync and financial reporting
 
 ## Important Files
 
@@ -32,17 +32,20 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 | File | Purpose |
 |------|--------|
 | `README.md` | User-facing documentation for all scripts |
-| `AGENTS.md` | AI assistant instructions (this file) |
+| `AGENTS.md` | Centralized AI assistant instructions (this file) |
+| `CLAUDE.md` | Claude Code entry point; defers to AGENTS.md |
+| `GEMINI.md` | Gemini entry point; defers to AGENTS.md |
 | `LLM_Instructions.md` | Personal LLM preferences for use across AI services (git-ignored, contains personal data) |
 
 ### Key Scripts
 
-- **`Update-AllPackages_Win.ps1`** - Windows package update script, creates timestamped `.log` files
-- **`Update-AllPackages_Linux.sh`** - Linux (Ubuntu) package update script
-- **`Update-AllPackages_Mac.sh`** - macOS package update script
-- **`plex_backup.ps1`** - Requires admin privileges, stops Plex services during backup
-- **`Update-CloudflareDNS.ps1`** - Makes external API calls to Cloudflare
-- **`Antigravity_Sync_*`** - Cross-platform sync suite (Win/Mac/Linux) with versioning, safety backups, and extension reconciliation.
+- **`system/Update-AllPackages_Win.ps1`** - Windows package update script, creates timestamped `.log` files
+- **`system/Update-AllPackages_Linux.sh`** - Linux (Ubuntu) package update script
+- **`system/Update-AllPackages_Mac.sh`** - macOS package update script
+- **`system/Update-CloudflareDNS.ps1`** - Makes external API calls to Cloudflare
+- **`backup/plex_backup.ps1`** - Requires admin privileges, stops Plex services during backup
+- **`backup/Antigravity_Sync_*`** - Cross-platform sync suite (Win/Mac/Linux) with versioning, safety backups, and extension reconciliation
+- **`finance_tools/schwab_sync.py`** - Portfolio sync with Seeking Alpha; supports email reports and history tracking
 
 ## Coding Guidelines
 
@@ -77,6 +80,13 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
    VALUE=$(python3 -c "import json; print(json.load(open('config.json'))['Key'])")
    ```
 
+### Python Scripts
+
+1. **Config Loading** - Use `argparse` for CLI arguments and JSON for config files
+2. **Dependencies** - Document required packages; use standard library where possible
+3. **Error Handling** - Use try/except with meaningful error messages and proper exit codes
+4. **Secrets** - Never hardcode API keys or credentials; load from config files or environment variables
+
 ### When Modifying Scripts
 
 1. Check if the script has a corresponding `.json` config file
@@ -104,36 +114,42 @@ git config commit.gpgsign true
 
 ```
 .
-├── .gitignore                    # Excludes .log and config files
-├── README.md                     # User documentation
-├── AGENTS.md                     # This file (AI instructions)
-├── LLM_Instructions.md           # Personal LLM preferences (git-ignored)
-├── LICENSE                       # License file
+├── .gitignore                        # Excludes .log and config files
+├── README.md                         # User documentation
+├── AGENTS.md                         # Centralized AI instructions (this file)
+├── CLAUDE.md                         # Claude Code entry point
+├── GEMINI.md                         # Gemini entry point
+├── LLM_Instructions.md               # Personal LLM preferences (git-ignored)
+├── LICENSE                            # License file
 │
-├── # Backup & Sync
-├── Antigravity_Sync_Win.ps1      # Windows Antigravity sync (Git-integrated)
-├── Antigravity_Sync_Mac.sh       # macOS Antigravity sync (Git-integrated)
-├── Antigravity_Sync_Linux.sh     # Linux Antigravity sync (Git-integrated)
-├── plex_backup.ps1               # Plex Media Server backup
+├── backup/                            # Backup & Sync
+│   ├── Antigravity_Sync_Win.ps1       # Windows Antigravity sync (Git-integrated)
+│   ├── Antigravity_Sync_Mac.sh        # macOS Antigravity sync (Git-integrated)
+│   ├── Antigravity_Sync_Linux.sh      # Linux Antigravity sync (Git-integrated)
+│   └── plex_backup.ps1               # Plex Media Server backup
 │
-├── # System Maintenance
-├── Update-AllPackages_Win.ps1    # Windows Package updater
-├── Update-AllPackages_Linux.sh  # Linux Package updater
-├── Update-AllPackages_Mac.sh    # macOS Package updater
-├── Setup-PackageUpdateTasks.ps1  # Windows Task scheduler setup
-├── Update-CloudflareDNS.ps1      # Dynamic DNS
-├── clean_plex.ps1                # Plex cleanup
-├── list_apps.ps1                 # List installed apps
-├── restart_camera_hub.ps1        # Restart Elgato Camera Hub
+├── system/                            # System Maintenance
+│   ├── Update-AllPackages_Win.ps1     # Windows package updater
+│   ├── Update-AllPackages_Linux.sh    # Linux package updater
+│   ├── Update-AllPackages_Mac.sh      # macOS package updater
+│   ├── Setup-PackageUpdateTasks.ps1   # Windows Task Scheduler setup
+│   ├── Update-CloudflareDNS.ps1       # Dynamic DNS
+│   ├── clean_plex.ps1                # Plex cleanup
+│   ├── list_apps.ps1                 # List installed apps
+│   └── restart_camera_hub.ps1        # Restart Elgato Camera Hub
 │
-├── # Media Processing
-├── Convert-Mp4ToIg.ps1         # Instagram video converter
-├── instagram.ps1                 # Instagram re-encoder
-└── download.ps1                  # YouTube/SoundCloud downloader
+├── media/                             # Media Processing
+│   ├── Convert-Mp4ToIg.ps1           # Instagram video converter
+│   ├── instagram.ps1                 # Instagram re-encoder
+│   └── download.ps1                  # YouTube/SoundCloud downloader
+│
+└── finance_tools/                     # Finance
+    └── schwab_sync.py                # Schwab portfolio sync with Seeking Alpha
 ```
 
 ## Testing Notes
 
-- `plex_backup.ps1` requires Plex to be installed and admin rights
-- `Update-CloudflareDNS.ps1` makes live API calls - test with caution
+- `backup/plex_backup.ps1` requires Plex to be installed and admin rights
+- `system/Update-CloudflareDNS.ps1` makes live API calls; test with caution
 - Media scripts require FFmpeg, yt-dlp, and scdl installed
+- `finance_tools/schwab_sync.py` calls Seeking Alpha API and can send emails; test with `--dry-run` or limited scope
