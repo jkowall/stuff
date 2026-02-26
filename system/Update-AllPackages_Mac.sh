@@ -10,6 +10,7 @@
 # CONFIGURATION
 # ============================================================================
 
+set -o pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}" .sh)"
 MACHINE_NAME="$(hostname)"
@@ -44,6 +45,26 @@ log() {
     echo "$log_entry" >> "$LOG_FILE"
 }
 
+is_data_saver_active() {
+    # Check if Low Data Mode is enabled via the macOS Network framework.
+    # Returns 0 (true) if constrained/Low Data Mode, 1 (false) otherwise.
+    swift - 2>/dev/null <<'SWIFT'
+import Network
+import Foundation
+let semaphore = DispatchSemaphore(value: 0)
+let monitor = NWPathMonitor()
+var isConstrained = false
+monitor.pathUpdateHandler = { path in
+    isConstrained = path.isConstrained
+    semaphore.signal()
+}
+monitor.start(queue: DispatchQueue.global())
+_ = semaphore.wait(timeout: .now() + 5)
+monitor.cancel()
+exit(isConstrained ? 0 : 1)
+SWIFT
+}
+
 show_notification() {
     local title="$1"
     local message="$2"
@@ -63,11 +84,11 @@ update_brew() {
     log "Info" "============================================================"
 
     log "Info" "Running: brew update"
-    if brew update >> "$LOG_FILE" 2>&1; then
+    if brew update 2>&1 | tee -a "$LOG_FILE"; then
         log "Info" "Running: brew upgrade"
-        if brew upgrade >> "$LOG_FILE" 2>&1; then
+        if brew upgrade 2>&1 | tee -a "$LOG_FILE"; then
             log "Info" "Running: brew cleanup"
-            brew cleanup >> "$LOG_FILE" 2>&1
+            brew cleanup 2>&1 | tee -a "$LOG_FILE"
             BREW_STATUS="Success"
             log "Success" "Homebrew updates completed successfully"
         else
@@ -91,7 +112,7 @@ update_mas() {
     log "Info" "============================================================"
 
     log "Info" "Running: mas upgrade"
-    if mas upgrade >> "$LOG_FILE" 2>&1; then
+    if mas upgrade 2>&1 | tee -a "$LOG_FILE"; then
         MAS_STATUS="Success"
         log "Success" "App Store updates completed successfully"
     else
@@ -111,7 +132,7 @@ update_npm() {
     log "Info" "============================================================"
 
     log "Info" "Running: npm update -g"
-    if npm update -g >> "$LOG_FILE" 2>&1; then
+    if npm update -g 2>&1 | tee -a "$LOG_FILE"; then
         NPM_STATUS="Success"
         log "Success" "NPM global updates completed successfully"
     else
@@ -163,6 +184,13 @@ log "Info" "PACKAGE UPDATE STARTED (User=$(whoami))"
 log "Info" "Script Directory: $SCRIPT_DIR"
 log "Info" "Log File: $LOG_FILE"
 log "Info" "============================================================"
+
+# Check for Data Saver / Low Data Mode
+if is_data_saver_active; then
+    log "Warning" "Low Data Mode (Data Saver) detected. Skipping auto updates to conserve data."
+    show_notification "Package Updates Skipped" "Low Data Mode detected. Updates deferred to save data."
+    exit 0
+fi
 
 # Cleanup
 cleanup_logs

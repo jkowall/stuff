@@ -72,6 +72,27 @@ function Write-Log {
     }
 }
 
+function Test-DataSaver {
+    <#
+    .SYNOPSIS
+        Checks if the current network connection is metered (Data Saver / Metered Connection).
+    .OUTPUTS
+        $true if metered connection is active, $false otherwise.
+    #>
+    try {
+        [void][Windows.Networking.Connectivity.NetworkInformation, Windows.Networking.Connectivity, ContentType = WindowsRuntime]
+        $Profile = [Windows.Networking.Connectivity.NetworkInformation]::GetInternetConnectionProfile()
+        if ($null -eq $Profile) { return $false }
+        $Cost = $Profile.GetConnectionCost()
+        return ($Cost.NetworkCostType -ne [Windows.Networking.Connectivity.NetworkCostType]::Unrestricted) -or
+               $Cost.Roaming -or $Cost.ApproachingDataLimit -or $Cost.OverDataLimit
+    }
+    catch {
+        Write-Log "Could not determine metered connection status: $($_.Exception.Message)" -Level Warning
+        return $false
+    }
+}
+
 function Show-ToastNotification {
     param(
         [string]$Title,
@@ -392,6 +413,15 @@ Write-Log "Script Directory: $ScriptDir" -Level Info
 Write-Log "Log File: $LogFile" -Level Info
 Write-Log "=" * 60 -Level Info
 
+# Check for Data Saver / Metered Connection
+if (Test-DataSaver) {
+    Write-Log "Metered connection (Data Saver) detected. Skipping auto updates to conserve data." -Level Warning
+    Show-ToastNotification -Title "Package Updates Skipped" -Message "Metered connection detected. Updates deferred to save data." -Type Warning
+    if ($script:TranscriptActive) {
+        try { Stop-Transcript -ErrorAction SilentlyContinue } catch {}
+    }
+    exit 0
+}
 
 # Clean up old log files (keep only 3 most recent)
 $LogPattern = Join-Path $ScriptDir "${ScriptName}_*.log"
