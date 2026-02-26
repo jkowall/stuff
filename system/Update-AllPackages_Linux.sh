@@ -134,13 +134,22 @@ update_npm() {
     log "Info" "STARTING NPM GLOBAL UPDATES"
     log "Info" "============================================================"
 
-    log "Info" "Running: npm update -g"
-    if npm update -g >> "$LOG_FILE" 2>&1; then
-        NPM_STATUS="Success"
-        log "Success" "NPM global updates completed successfully"
+    log "Info" "Checking for outdated NPM packages..."
+    # npm outdated exits with 1 if packages are outdated
+    OUTDATED=$(npm outdated -g --parseable 2>/dev/null | awk -F: 'NF>=4 {print $(NF-2)}') || true
+    
+    if [ -n "$OUTDATED" ]; then
+        log "Info" "Updating packages: $(echo $OUTDATED | tr '\n' ' ')"
+        if npm install -g $OUTDATED >> "$LOG_FILE" 2>&1; then
+            NPM_STATUS="Success"
+            log "Success" "NPM global updates completed successfully"
+        else
+            NPM_STATUS="Warning"
+            log "Warning" "NPM update encountered issues."
+        fi
     else
-        NPM_STATUS="Warning"
-        log "Warning" "NPM update encountered issues."
+        NPM_STATUS="Success"
+        log "Success" "NPM global packages are already up-to-date"
     fi
 }
 

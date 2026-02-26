@@ -235,35 +235,46 @@ function Update-NpmGlobal {
         $NpmPath = Get-Command npm -ErrorAction Stop
         Write-Log "Found npm at: $($NpmPath.Source)" -Level Info
         
-        # First, list outdated packages
         Write-Log "Checking for outdated global packages..." -Level Info
-        $Outdated = & npm outdated -g 2>&1
-        if ($Outdated) {
-            $Outdated | ForEach-Object { Write-Log $_ -Level Info }
+        $OutdatedText = & npm outdated -g --parseable 2>&1
+        
+        $PackagesToUpdate = @()
+        if ($OutdatedText) {
+            foreach ($Line in $OutdatedText) {
+                $LineStr = [string]$Line
+                if ($LineStr -match "npm ERR!" -or $LineStr -match "npm WARN") { continue }
+                $Parts = $LineStr -split ":"
+                if ($Parts.Length -ge 4) {
+                    $PackageLatest = $Parts[-3]
+                    if ($PackageLatest -match "@") {
+                        $PackagesToUpdate += $PackageLatest
+                    }
+                }
+            }
+        }
+        
+        if ($PackagesToUpdate.Count -gt 0) {
+            $PackageList = $PackagesToUpdate -join " "
+            Write-Log "Updating packages: $PackageList" -Level Info
+            
+            & npm install -g $PackagesToUpdate
+                
+            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) {
+                $script:Results.Npm.Status = "Warning"
+                $script:Results.Npm.Message = "npm completed with exit code: $LASTEXITCODE"
+                Write-Log "npm completed with exit code: $LASTEXITCODE" -Level Warning
+                return
+            }
+            
+            $script:Results.Npm.Status = "Success"
+            $script:Results.Npm.Message = "npm global packages updated successfully"
+            Write-Log "npm global updates completed successfully" -Level Success
         }
         else {
-            Write-Log "No outdated packages found" -Level Info
+            $script:Results.Npm.Status = "Success"
+            $script:Results.Npm.Message = "npm global packages are already up-to-date"
+            Write-Log "npm global packages are already up-to-date" -Level Success
         }
-        
-        # Check if npm is installed in Program Files (requires admin)
-        $NpmDir = Split-Path (Split-Path $NpmPath.Source -Parent) -Parent
-        $RequiresAdmin = $NpmDir -like "*Program Files*"
-        
-        # Running npm update (using global $IsAdmin)
-        
-        Write-Log "Running npm update..." -Level Info
-        & npm update -g
-            
-        if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) {
-            $script:Results.Npm.Status = "Warning"
-            $script:Results.Npm.Message = "npm completed with exit code: $LASTEXITCODE"
-            Write-Log "npm completed with exit code: $LASTEXITCODE" -Level Warning
-            return
-        }
-        
-        $script:Results.Npm.Status = "Success"
-        $script:Results.Npm.Message = "npm global packages updated successfully"
-        Write-Log "npm global updates completed successfully" -Level Success
     }
     catch {
         $script:Results.Npm.Status = "Error"
