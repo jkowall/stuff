@@ -134,37 +134,49 @@ try {
     $TotalFiles = $SourceFiles.Count
     Write-Log "  Source: $TotalFiles files, $([math]::Round($TotalSizeBytes/1MB, 1)) MB"
 
-    # Run robocopy in background job for progress monitoring
+    # Run robocopy in background job with log file for progress monitoring
+    $robocopyLog = Join-Path $CurrentTempDir "robocopy_progress.log"
     $copyJob = Start-Job -ScriptBlock {
-        param($src, $dst, $excludeArgs)
-        $output = robocopy $src $dst /E /R:1 /W:1 /NP /NDL @excludeArgs 2>&1
-        return @{ ExitCode = $LASTEXITCODE; Output = ($output | Out-String) }
-    } -ArgumentList $PlexDataPath, $WorkingDataDir, $ExcludeArgs
+        param($src, $dst, $excludeArgs, $logPath)
+        robocopy $src $dst /E /R:1 /W:1 /NP /NDL /LOG:$logPath /TEE @excludeArgs 2>&1 | Out-Null
+        return $LASTEXITCODE
+    } -ArgumentList $PlexDataPath, $WorkingDataDir, $ExcludeArgs, $robocopyLog
 
-    # Monitor copy progress by destination size
+    # Monitor copy progress by counting file entries in robocopy log
+    $lastPct = -1
     while ($copyJob.State -eq 'Running') {
-        Start-Sleep -Milliseconds 500
-        if (Test-Path $WorkingDataDir) {
-            $copiedBytes = (Get-ChildItem -Path $WorkingDataDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
-            if ($TotalSizeBytes -gt 0) {
-                $pct = [math]::Min(99, [math]::Round(($copiedBytes / $TotalSizeBytes) * 100))
-                Write-Progress -Activity "Copying Plex Data" -Status "$([math]::Round($copiedBytes/1MB,1)) / $([math]::Round($TotalSizeBytes/1MB,1)) MB" -PercentComplete $pct
+        Start-Sleep -Seconds 1
+        if (Test-Path $robocopyLog) {
+            # Each copied file produces ~1 line; subtract ~15 for header/footer
+            $lineCount = 0
+            try { $lineCount = @(Get-Content $robocopyLog -ErrorAction SilentlyContinue).Count } catch {}
+            $filesCopied = [math]::Max(0, $lineCount - 15)
+            if ($TotalFiles -gt 0) {
+                $pct = [math]::Min(99, [math]::Round(($filesCopied / $TotalFiles) * 100))
+                if ($pct -ne $lastPct) {
+                    Write-Progress -Activity "Copying Plex Data" -Status "$filesCopied / $TotalFiles files" -PercentComplete $pct
+                    $lastPct = $pct
+                }
             }
         }
     }
     Write-Progress -Activity "Copying Plex Data" -Completed
-    $copyResult = Receive-Job -Job $copyJob
+    $copyExitCode = Receive-Job -Job $copyJob
     Remove-Job -Job $copyJob -Force
 
     # Robocopy exit codes: 0-7 are success (bitmask of copied/skipped/mismatched), 8+ are errors
-    if ($copyResult.ExitCode -ge 8) {
-        Write-Log "Robocopy output:`n$($copyResult.Output)" -Level "ERROR"
-        throw "Robocopy failed with exit code $($copyResult.ExitCode)"
+    if ($copyExitCode -ge 8) {
+        $logContent = if (Test-Path $robocopyLog) { Get-Content $robocopyLog -Raw } else { "(no log)" }
+        Write-Log "Robocopy output:`n$logContent" -Level "ERROR"
+        throw "Robocopy failed with exit code $copyExitCode"
     }
 
-    # Log summary from robocopy output
-    $summaryLines = $copyResult.Output -split "`n" | Select-String -Pattern "^\s*(Dirs|Files|Bytes)\s*:" | ForEach-Object { $_.Line.Trim() }
-    foreach ($line in $summaryLines) { Write-Log "  $line" }
+    # Log summary from robocopy log
+    if (Test-Path $robocopyLog) {
+        $logContent = Get-Content $robocopyLog -Raw
+        $summaryLines = $logContent -split "`n" | Select-String -Pattern "^\s*(Dirs|Files|Bytes)\s*:" | ForEach-Object { $_.Line.Trim() }
+        foreach ($line in $summaryLines) { Write-Log "  $line" }
+    }
     Write-Log "Data copy to temporary storage complete."
 
     # Backup registry to Temp
