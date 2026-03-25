@@ -147,20 +147,20 @@ try {
     while ($copyJob.State -eq 'Running') {
         Start-Sleep -Seconds 1
         if (Test-Path $robocopyLog) {
-            # Each copied file produces ~1 line; subtract ~15 for header/footer
             $lineCount = 0
             try { $lineCount = @(Get-Content $robocopyLog -ErrorAction SilentlyContinue).Count } catch {}
             $filesCopied = [math]::Max(0, $lineCount - 15)
             if ($TotalFiles -gt 0) {
                 $pct = [math]::Min(99, [math]::Round(($filesCopied / $TotalFiles) * 100))
                 if ($pct -ne $lastPct) {
-                    Write-Progress -Activity "Copying Plex Data" -Status "$filesCopied / $TotalFiles files" -PercentComplete $pct
+                    Write-Host "`r  [Copy] $pct% - $filesCopied / $TotalFiles files" -NoNewline
                     $lastPct = $pct
                 }
             }
         }
     }
-    Write-Progress -Activity "Copying Plex Data" -Completed
+    if ($lastPct -ge 0) { Write-Host "" }
+    Write-Log "  Copy: 100%"
     $copyExitCode = Receive-Job -Job $copyJob
     Remove-Job -Job $copyJob -Force
 
@@ -210,15 +210,20 @@ try {
 
     # Monitor progress by checking archive size
     $expectedSize = $TotalSizeBytes * 0.3
+    $lastPct = -1
     while ($job.State -eq 'Running') {
-        Start-Sleep -Milliseconds 500
+        Start-Sleep -Seconds 1
         if (Test-Path $DataArchive) {
             $currSize = (Get-Item $DataArchive).Length
             $pct = [math]::Min(99, [math]::Round(($currSize / $expectedSize) * 100))
-            Write-Progress -Activity "Compressing Plex Backup" -Status "$([math]::Round($currSize/1MB,1)) MB written" -PercentComplete $pct
+            if ($pct -ne $lastPct) {
+                Write-Host "`r  [Compress] $pct% - $([math]::Round($currSize/1MB,1)) MB written" -NoNewline
+                $lastPct = $pct
+            }
         }
     }
-    Write-Progress -Activity "Compressing Plex Backup" -Completed
+    if ($lastPct -ge 0) { Write-Host "" }
+    Write-Log "  Compress: 100%"
     $jobResult = Receive-Job -Job $job
     Remove-Job -Job $job -Force
 
