@@ -129,7 +129,7 @@ try {
 
     # Run robocopy directly — output streams to console in real time
     Write-Log "  Running robocopy..."
-    robocopy $PlexDataPath $WorkingDataDir /E /R:1 /W:1 /NDL /NJH @ExcludeArgs
+    robocopy $PlexDataPath $WorkingDataDir /E /R:1 /W:1 /NDL /NFL /NJH /ETA @ExcludeArgs
     $robocopyExit = $LASTEXITCODE
 
     # Robocopy exit codes: 0-7 are success (bitmask of copied/skipped/mismatched), 8+ are errors
