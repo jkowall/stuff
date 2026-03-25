@@ -127,57 +127,23 @@ try {
     $ExcludeArgs = @("/XD") + $ExcludeDirs
     Write-Log "  Excluding directories: $($ExcludeDirs -join ', ')"
 
-    # Calculate source size for progress reporting
-    $SourceFiles = Get-ChildItem -Path $PlexDataPath -Recurse -File -ErrorAction SilentlyContinue |
-        Where-Object { $skip = $false; foreach ($d in $ExcludeDirs) { if ($_.FullName -match [regex]::Escape($d)) { $skip = $true; break } }; -not $skip }
-    $TotalSizeBytes = ($SourceFiles | Measure-Object -Property Length -Sum).Sum
-    $TotalFiles = $SourceFiles.Count
-    Write-Log "  Source: $TotalFiles files, $([math]::Round($TotalSizeBytes/1MB, 1)) MB"
-
-    # Run robocopy in background job with log file for progress monitoring
-    $robocopyLog = Join-Path $CurrentTempDir "robocopy_progress.log"
-    $copyJob = Start-Job -ScriptBlock {
-        param($src, $dst, $excludeArgs, $logPath)
-        robocopy $src $dst /E /R:1 /W:1 /NP /NDL /LOG:$logPath /TEE @excludeArgs 2>&1 | Out-Null
-        return $LASTEXITCODE
-    } -ArgumentList $PlexDataPath, $WorkingDataDir, $ExcludeArgs, $robocopyLog
-
-    # Monitor copy progress by counting file entries in robocopy log
-    $lastPct = -1
-    while ($copyJob.State -eq 'Running') {
-        Start-Sleep -Seconds 1
-        if (Test-Path $robocopyLog) {
-            $lineCount = 0
-            try { $lineCount = @(Get-Content $robocopyLog -ErrorAction SilentlyContinue).Count } catch {}
-            $filesCopied = [math]::Max(0, $lineCount - 15)
-            if ($TotalFiles -gt 0) {
-                $pct = [math]::Min(99, [math]::Round(($filesCopied / $TotalFiles) * 100))
-                if ($pct -ne $lastPct) {
-                    Write-Host "`r  [Copy] $pct% - $filesCopied / $TotalFiles files" -NoNewline
-                    $lastPct = $pct
-                }
-            }
-        }
-    }
-    if ($lastPct -ge 0) { Write-Host "" }
-    Write-Log "  Copy: 100%"
-    $copyExitCode = Receive-Job -Job $copyJob
-    Remove-Job -Job $copyJob -Force
+    # Run robocopy directly so its native output streams to the console
+    Write-Log "  Running robocopy..."
+    $robocopyOutput = robocopy $PlexDataPath $WorkingDataDir /E /R:1 /W:1 /NDL /NJH @ExcludeArgs 2>&1
+    $robocopyExit = $LASTEXITCODE
+    # Show robocopy summary lines
+    $robocopyOutput | ForEach-Object { $line = "$_".Trim(); if ($line) { Write-Host "  $line" } }
 
     # Robocopy exit codes: 0-7 are success (bitmask of copied/skipped/mismatched), 8+ are errors
-    if ($copyExitCode -ge 8) {
-        $logContent = if (Test-Path $robocopyLog) { Get-Content $robocopyLog -Raw } else { "(no log)" }
-        Write-Log "Robocopy output:`n$logContent" -Level "ERROR"
-        throw "Robocopy failed with exit code $copyExitCode"
-    }
-
-    # Log summary from robocopy log
-    if (Test-Path $robocopyLog) {
-        $logContent = Get-Content $robocopyLog -Raw
-        $summaryLines = $logContent -split "`n" | Select-String -Pattern "^\s*(Dirs|Files|Bytes)\s*:" | ForEach-Object { $_.Line.Trim() }
-        foreach ($line in $summaryLines) { Write-Log "  $line" }
+    if ($robocopyExit -ge 8) {
+        Write-Log "Robocopy failed (exit code $robocopyExit)" -Level "ERROR"
+        throw "Robocopy failed with exit code $robocopyExit"
     }
     Write-Log "Data copy to temporary storage complete."
+
+    # Get copied size for compression progress estimate
+    $TotalSizeBytes = (Get-ChildItem -Path $WorkingDataDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+    Write-Log "  Copied $([math]::Round($TotalSizeBytes/1MB, 1)) MB"
 
     # Backup registry to Temp
     Write-Log "Exporting registry key to temporary storage..."
@@ -208,22 +174,21 @@ try {
         $ServicesRestarted = $true
     }
 
-    # Monitor progress by checking archive size
+    # Monitor compression progress by checking archive size growth
     $expectedSize = $TotalSizeBytes * 0.3
-    $lastPct = -1
+    $lastReportedPct = -10
     while ($job.State -eq 'Running') {
-        Start-Sleep -Seconds 1
+        Start-Sleep -Seconds 2
         if (Test-Path $DataArchive) {
             $currSize = (Get-Item $DataArchive).Length
             $pct = [math]::Min(99, [math]::Round(($currSize / $expectedSize) * 100))
-            if ($pct -ne $lastPct) {
-                Write-Host "`r  [Compress] $pct% - $([math]::Round($currSize/1MB,1)) MB written" -NoNewline
-                $lastPct = $pct
+            if (($pct - $lastReportedPct) -ge 10) {
+                Write-Host "  [Compress] $pct% - $([math]::Round($currSize/1MB,1)) MB written"
+                $lastReportedPct = $pct
             }
         }
     }
-    if ($lastPct -ge 0) { Write-Host "" }
-    Write-Log "  Compress: 100%"
+    Write-Host "  [Compress] 100%"
     $jobResult = Receive-Job -Job $job
     Remove-Job -Job $job -Force
 
