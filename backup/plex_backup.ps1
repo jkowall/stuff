@@ -1,12 +1,13 @@
 <#
 .SYNOPSIS
     Plex Media Server Backup Script
-    
+
 .DESCRIPTION
     Backs up Plex data and registry settings to a compressed archive.
     Uses a temporary fast directory (D:\tmp) for intermediate operations.
     Robustly stops Plex services and processes before backup.
-    
+    Uses robocopy for fast parallel file copying with configurable exclusions.
+
 .NOTES
     Prerequisite: NanaZip (winget install M2Team.NanaZip)
 #>
@@ -34,6 +35,7 @@ $TempWorkingPath = $ConfigData.TempWorkingPath
 $RegistryKey = "HKLM\SOFTWARE\Plex, Inc.\Plex Media Server"
 $7ZipPath = $ConfigData.'7ZipPath'
 $PlexServiceNames = @("PlexService", "Plex Media Server")
+$ExcludeDirs = @("Cache", "Crash Reports", "Updates", "Logs")
 $MaxBackups = 2
 
 
@@ -43,6 +45,7 @@ $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 # Temporary directory for intermediate steps
 $CurrentTempDir = Join-Path $TempWorkingPath "PlexBackup_Work_$Timestamp"
 $LogFile = Join-Path $CurrentTempDir "backup_log_$Timestamp.txt"
+$LockFile = Join-Path $TempWorkingPath "plex_backup.lock"
 
 # Track which services we stop so we can restart them
 $StoppedServices = @()
@@ -63,12 +66,12 @@ try {
     Write-Log "Timestamp: $Timestamp"
     Write-Log "Backup Destination: $BackupDestination"
     Write-Log "Temporary Working Path: $TempWorkingPath"
-    
+
     # Prerequisite checks
     if (!(Test-Path -Path $PlexDataPath)) {
         throw "Plex data path not found: $PlexDataPath"
     }
-    
+
     if (!(Test-Path -Path $7ZipPath)) {
         throw "NanaZip/7-Zip not found at: $7ZipPath`nInstall via: winget install M2Team.NanaZip"
     }
@@ -78,15 +81,23 @@ try {
         New-Item -ItemType Directory -Path $TempWorkingPath | Out-Null
         Write-Log "Created temporary working root: $TempWorkingPath"
     }
+
+    # Acquire lock to prevent concurrent runs
+    if (Test-Path $LockFile) {
+        throw "Another backup is already running (lock file exists: $LockFile). If this is stale, delete it manually."
+    }
+    New-Item -ItemType File -Path $LockFile -Force | Out-Null
+    Write-Log "Lock acquired: $LockFile"
+
     New-Item -ItemType Directory -Path $CurrentTempDir | Out-Null
     Write-Log "Created temporary working directory: $CurrentTempDir"
-    
+
     # Create final backup destination if needed
     if (!(Test-Path -Path $BackupDestination)) {
         New-Item -ItemType Directory -Path $BackupDestination | Out-Null
         Write-Log "Created backup destination: $BackupDestination"
     }
-    
+
     # Robustly Stop Plex Services and Processes
     Write-Log "Attempting to stop all Plex-related services..."
     foreach ($SvcName in $PlexServiceNames) {
@@ -108,58 +119,70 @@ try {
         Start-Sleep -Seconds 2
         Write-Log "  Processes terminated."
     }
-    
-    # Backup Plex data directory to Temp
-    Write-Log "Copying Plex data to temporary storage..."
+
+    # Backup Plex data directory to Temp using robocopy
+    Write-Log "Copying Plex data to temporary storage via robocopy..."
     $WorkingDataDir = Join-Path $CurrentTempDir "PlexData"
-    New-Item -ItemType Directory -Path $WorkingDataDir | Out-Null
-    
-    $SourceFiles = Get-ChildItem -Path $PlexDataPath -Recurse -File
-    $TotalFiles = $SourceFiles.Count
+
+    $ExcludeArgs = @("/XD") + $ExcludeDirs
+    Write-Log "  Excluding directories: $($ExcludeDirs -join ', ')"
+
+    # Calculate source size for progress reporting
+    $SourceFiles = Get-ChildItem -Path $PlexDataPath -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $skip = $false; foreach ($d in $ExcludeDirs) { if ($_.FullName -match [regex]::Escape($d)) { $skip = $true; break } }; -not $skip }
     $TotalSizeBytes = ($SourceFiles | Measure-Object -Property Length -Sum).Sum
-    $TotalSizeMB = [math]::Round($TotalSizeBytes / 1MB, 2)
-    Write-Log "  Source: $TotalFiles files, $TotalSizeMB MB"
-    
-    $copiedCount = 0
-    $copiedBytes = 0
-    
-    foreach ($file in $SourceFiles) {
-        $relativePath = $file.FullName.Substring($PlexDataPath.Length)
-        $destPath = Join-Path $WorkingDataDir $relativePath
-        $destDir = Split-Path -Parent $destPath
-        
-        if (!(Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
-        
-        Copy-Item -Path $file.FullName -Destination $destPath -Force
-        
-        # Report every 50 files to UI/Log to show movement
-        if ($copiedCount % 50 -eq 0 -or $copiedCount -eq $TotalFiles) {
-            Write-Log "  [Copying] ($([math]::Round($copiedCount/$TotalFiles*100))%) File: $($file.Name)"
+    $TotalFiles = $SourceFiles.Count
+    Write-Log "  Source: $TotalFiles files, $([math]::Round($TotalSizeBytes/1MB, 1)) MB"
+
+    # Run robocopy in background job for progress monitoring
+    $copyJob = Start-Job -ScriptBlock {
+        param($src, $dst, $excludeArgs)
+        $output = robocopy $src $dst /E /R:1 /W:1 /NP /NDL @excludeArgs 2>&1
+        return @{ ExitCode = $LASTEXITCODE; Output = ($output | Out-String) }
+    } -ArgumentList $PlexDataPath, $WorkingDataDir, $ExcludeArgs
+
+    # Monitor copy progress by destination size
+    while ($copyJob.State -eq 'Running') {
+        Start-Sleep -Milliseconds 500
+        if (Test-Path $WorkingDataDir) {
+            $copiedBytes = (Get-ChildItem -Path $WorkingDataDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+            if ($TotalSizeBytes -gt 0) {
+                $pct = [math]::Min(99, [math]::Round(($copiedBytes / $TotalSizeBytes) * 100))
+                Write-Progress -Activity "Copying Plex Data" -Status "$([math]::Round($copiedBytes/1MB,1)) / $([math]::Round($TotalSizeBytes/1MB,1)) MB" -PercentComplete $pct
+            }
         }
-        
-        $copiedCount++
-        $copiedBytes += $file.Length
-        Write-Progress -Activity "Copying Plex Data to $TempWorkingPath" -Status "$copiedCount of $TotalFiles files ($([math]::Round($copiedBytes/1MB, 1)) MB)" -PercentComplete ([math]::Round(($copiedBytes / $TotalSizeBytes) * 100))
     }
-    Write-Progress -Activity "Copying Plex Data to $TempWorkingPath" -Completed
+    Write-Progress -Activity "Copying Plex Data" -Completed
+    $copyResult = Receive-Job -Job $copyJob
+    Remove-Job -Job $copyJob -Force
+
+    # Robocopy exit codes: 0-7 are success (bitmask of copied/skipped/mismatched), 8+ are errors
+    if ($copyResult.ExitCode -ge 8) {
+        Write-Log "Robocopy output:`n$($copyResult.Output)" -Level "ERROR"
+        throw "Robocopy failed with exit code $($copyResult.ExitCode)"
+    }
+
+    # Log summary from robocopy output
+    $summaryLines = $copyResult.Output -split "`n" | Select-String -Pattern "^\s*(Dirs|Files|Bytes)\s*:" | ForEach-Object { $_.Line.Trim() }
+    foreach ($line in $summaryLines) { Write-Log "  $line" }
     Write-Log "Data copy to temporary storage complete."
-    
+
     # Backup registry to Temp
     Write-Log "Exporting registry key to temporary storage..."
     $TempRegPath = Join-Path $CurrentTempDir "PlexRegistry_$Timestamp.reg"
     $RegResult = reg export $RegistryKey $TempRegPath /y 2>&1
     if ($LASTEXITCODE -eq 0) { Write-Log "  Registry export complete." }
     else { Write-Log "  Registry export warning: $RegResult" -Level "WARN" }
-    
+
     # Compress within Temp
     Write-Log "Compressing backup in temporary storage..."
     $DataArchive = Join-Path $CurrentTempDir "PlexBackup_$Timestamp.7z"
     $job = Start-Job -ScriptBlock {
         param($7z, $archive, $data, $reg)
-        & $7z a -t7z -mx=9 $archive $data $reg 2>&1
-        return $LASTEXITCODE
+        $output = & $7z a -t7z -mx=5 $archive $data $reg 2>&1
+        return @{ ExitCode = $LASTEXITCODE; Output = ($output | Out-String) }
     } -ArgumentList $7ZipPath, $DataArchive, $WorkingDataDir, $TempRegPath
-    
+
     # Restart Services EARLY to minimize downtime
     if ($StoppedServices.Count -gt 0) {
         Write-Log "Restarting Plex services early (compression is running in background)..."
@@ -174,8 +197,7 @@ try {
     }
 
     # Monitor progress by checking archive size
-    $expectedRatio = 0.3
-    $expectedSize = $TotalSizeBytes * $expectedRatio
+    $expectedSize = $TotalSizeBytes * 0.3
     while ($job.State -eq 'Running') {
         Start-Sleep -Milliseconds 500
         if (Test-Path $DataArchive) {
@@ -187,9 +209,25 @@ try {
     Write-Progress -Activity "Compressing Plex Backup" -Completed
     $jobResult = Receive-Job -Job $job
     Remove-Job -Job $job -Force
-    
+
     if (!(Test-Path $DataArchive)) { throw "7-Zip compression failed - archive not created" }
+
+    # Check 7-Zip exit code
+    $7zExitCode = $jobResult.ExitCode
+    if ($7zExitCode -ne 0) {
+        Write-Log "7-Zip output:`n$($jobResult.Output)" -Level "ERROR"
+        throw "7-Zip compression failed with exit code $7zExitCode"
+    }
     Write-Log "Compression complete."
+
+    # Verify archive integrity
+    Write-Log "Verifying archive integrity..."
+    $testOutput = & $7ZipPath t $DataArchive 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Log "7-Zip test output:`n$($testOutput | Out-String)" -Level "ERROR"
+        throw "7-Zip archive integrity check failed"
+    }
+    Write-Log "  Archive integrity verified."
 
     # Move to Final Destination
     Write-Log "Moving final backup to destination ($BackupDestination)..."
@@ -236,5 +274,12 @@ finally {
             Write-Log "  $SvcName started."
         }
     }
+
+    # Release lock file
+    if (Test-Path $LockFile) {
+        Remove-Item $LockFile -ErrorAction SilentlyContinue
+        Write-Log "Lock released."
+    }
+
     Write-Log "Backup script finished."
 }
