@@ -50,10 +50,18 @@ show_notification() {
     local message="$2"
     local type="$3" # low, normal, critical
 
-    if command -v notify-send >/dev/null 2>&1; then
-        notify-send -u "$type" "$title" "$message"
-    else
+    if ! command -v notify-send >/dev/null 2>&1; then
         log "Warning" "notify-send not found. Skipping desktop notification."
+        return
+    fi
+
+    if [ -z "${DISPLAY:-}" ] && [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+        log "Info" "Desktop notification environment unavailable. Skipping notification."
+        return
+    fi
+
+    if ! notify-send -u "$type" "$title" "$message" >/dev/null 2>&1; then
+        log "Warning" "Desktop notification failed. Skipping notification."
     fi
 }
 
@@ -185,32 +193,6 @@ cleanup_logs() {
     ls -t "${SCRIPT_DIR}/${SCRIPT_NAME}_${MACHINE_NAME}_"*.log 2>/dev/null | tail -n +4 | xargs -r rm -f
 }
 
-verify_scheduling() {
-    if [ "$EUID" -ne 0 ]; then
-        return # Scheduling check usually for the user or if run with sudo
-    fi
-
-    local current_cron=$(crontab -l 2>/dev/null)
-    local script_path="$(realpath "$0")"
-    local cron_job="0 1 * * 6 $script_path >> /dev/null 2>&1"
-
-    if echo "$current_cron" | grep -q "$script_path"; then
-        log "Info" "Scheduled task is already configured in crontab."
-        return
-    fi
-
-    echo ""
-    echo -e "\e[36m--- SCHEDULED TASK SETUP ---\e[0m"
-    echo "This script is not currently scheduled to run weekly."
-    read -p "Would you like to schedule it to run every Saturday at 1:00 AM? (y/n): " choice
-
-    if [[ "$choice" == "y" || "$choice" == "Y" ]]; then
-        (crontab -l 2>/dev/null; echo "$cron_job") | crontab -
-        log "Success" "Scheduled task created in crontab!"
-        show_notification "Task Scheduled" "Weekly updates scheduled for Saturdays at 1:00 AM" "normal"
-    fi
-}
-
 # ============================================================================
 # MAIN EXECUTION
 # ============================================================================
@@ -239,8 +221,10 @@ cleanup_logs
 # Note: notify-send as root needs to find the user session. 
 # We use SUDO_USER if available to try and show it on the correct desktop.
 if [ -n "$SUDO_USER" ]; then
-    sudo -u "$SUDO_USER" DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u "$SUDO_USER")/bus \
-    notify-send -u low "Package Updates" "Starting updates for apt, snap, flatpak, and npm..." 2>/dev/null
+    if ! sudo -u "$SUDO_USER" DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u "$SUDO_USER")/bus \
+        notify-send -u low "Package Updates" "Starting updates for apt, snap, flatpak, and npm..." >/dev/null 2>&1; then
+        log "Info" "Desktop notification environment unavailable. Skipping start notification."
+    fi
 else
     show_notification "Package Updates Starting" "Updating apt, snap, flatpak, and npm packages..." "low"
 fi
@@ -254,13 +238,9 @@ update_npm
 # Summary
 show_summary
 
-# Scheduling
-verify_scheduling
-
 echo ""
 log "Info" "Update process completed."
 # No read-host equivalent usually needed in bash for non-interactive execution, but added for terminal clarity
 if [ -t 0 ]; then
     read -p "Press Enter to close..."
 fi
-

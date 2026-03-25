@@ -272,8 +272,22 @@ function Invoke-GitSync {
             Write-Log "  Changes to be committed:"
             & git status --short
             & git commit -m "Auto-backup Antigravity settings: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-            Write-Log "  Pushing to remote..."
-            & git push
+            # Check if there are local commits ahead of remote
+            $ahead = & git rev-list --count '@{u}..HEAD' 2>$null
+            if ($ahead -gt 0) {
+                Write-Log "  $ahead commit(s) ahead of remote. Pulling latest before push (rebase)..."
+                & git pull --rebase
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Log "  Git pull --rebase failed. Attempting merge pull..." -Level Warning
+                    & git rebase --abort 2>$null
+                    & git pull
+                }
+                Write-Log "  Pushing to remote..."
+                & git push
+            }
+            else {
+                Write-Log "  Nothing to push, already in sync with remote." -Level Info
+            }
         }
     }
     catch {

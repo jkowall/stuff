@@ -326,82 +326,6 @@ function Show-Summary {
     }
 }
 
-function Verify-ScheduledTask {
-    $TaskName = "Weekly Package Updates"
-    $ScriptPath = $PSCommandPath
-    
-    try {
-        $ExistingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-        
-        if ($ExistingTask) {
-            # Check if trigger matches Saturday at 1 AM
-            $Trigger = $ExistingTask.Triggers | Where-Object { $_.WeeklyDetails -and $_.WeeklyDetails.DaysOfWeek -eq "Saturday" -and $_.StartBoundary -like "*T01:00:00" }
-            if ($Trigger) {
-                Write-Log "Scheduled task '$TaskName' is correctly configured." -Level Info
-                return
-            }
-            Write-Log "Scheduled task '$TaskName' exists but configuration might be different. Recommended: Saturday at 1:00 AM." -Level Warning
-            # We found a task, so we don't need to prompt to create one.
-            return
-        }
-        else {
-            Write-Log "Scheduled task '$TaskName' not found." -Level Warning
-        }
-
-        # If we get here, the task is completely missing
-        Write-Host ""
-        Write-Host "--- SCHEDULED TASK SETUP ---" -ForegroundColor Cyan
-        Write-Host "This script is not currently scheduled to run weekly."
-        $Choice = Read-Host "Would you like to schedule it to run every Saturday at 1:00 AM? (y/n)"
-        
-        if ($Choice -eq 'y') {
-            Write-Log "User requested to schedule the task." -Level Info
-            
-            # Remove existing task if it exists to prevent duplicates
-            if ($ExistingTask) {
-                Write-Log "Removing existing task to prevent duplicates..." -Level Info
-                Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-            }
-            
-            $Action = New-ScheduledTaskAction `
-                -Execute "powershell.exe" `
-                -Argument "-ExecutionPolicy Bypass -NoExit -File `"$ScriptPath`"" `
-                -WorkingDirectory $ScriptDir
-            
-            $Trigger = New-ScheduledTaskTrigger `
-                -Weekly `
-                -DaysOfWeek Saturday `
-                -At "1:00AM"
-            
-            $Settings = New-ScheduledTaskSettingsSet `
-                -AllowStartIfOnBatteries `
-                -DontStopIfGoingOnBatteries `
-                -StartWhenAvailable `
-                -RunOnlyIfNetworkAvailable `
-                -WakeToRun:$false
-            
-            $Principal = New-ScheduledTaskPrincipal `
-                -UserId $env:USERNAME `
-                -LogonType Interactive `
-                -RunLevel Limited
-            
-            Register-ScheduledTask `
-                -TaskName $TaskName `
-                -Action $Action `
-                -Trigger $Trigger `
-                -Settings $Settings `
-                -Principal $Principal `
-                -Description "Weekly update of winget, Chocolatey, and npm packages. Runs every Saturday at 1:00 AM."
-            
-            Write-Log "Scheduled task '$TaskName' created successfully!" -Level Success
-            Show-ToastNotification -Title "Task Scheduled" -Message "Weekly updates scheduled for Saturdays at 1:00 AM" -Type Info
-        }
-    }
-    catch {
-        Write-Log "Failed to verify or create scheduled task: $($_.Exception.Message)" -Level Error
-    }
-}
-
 # ============================================================================
 # MAIN EXECUTION
 # ============================================================================
@@ -453,9 +377,6 @@ Show-ToastNotification -Title "Package Updates Starting" -Message "Updating wing
 # Handle split execution (User vs Elevated)
 
 if (-not $IsAdmin -and -not $Elevated) {
-    # Verify scheduling (only once in the main process)
-    Verify-ScheduledTask
-    
     # 1. Run Other Non-Admin Tasks (if any)
     # (Currently all tasks are moved to elevated to avoid warnings)
     

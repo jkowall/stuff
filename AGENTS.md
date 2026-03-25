@@ -42,6 +42,9 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 - **`system/Update-AllPackages_Win.ps1`** - Windows package update script, creates timestamped `.log` files
 - **`system/Update-AllPackages_Linux.sh`** - Linux (Ubuntu) package update script
 - **`system/Update-AllPackages_Mac.sh`** - macOS package update script
+- **`system/Setup-PackageUpdateTasks.ps1`** - Windows Task Scheduler setup and cleanup for package updates
+- **`system/Setup-PackageUpdateTasks_Linux.sh`** - Linux cron setup and cleanup for package updates
+- **`system/Setup-PackageUpdateTasks_Mac.sh`** - macOS launchd setup and cleanup for package updates
 - **`system/Update-CloudflareDNS.ps1`** - Makes external API calls to Cloudflare
 - **`backup/plex_backup.ps1`** - Requires admin privileges, stops Plex services during backup
 - **`backup/Antigravity_Sync_*`** - Cross-platform sync suite (Win/Mac/Linux) with versioning, safety backups, and extension reconciliation
@@ -133,6 +136,8 @@ git config commit.gpgsign true
 │   ├── Update-AllPackages_Linux.sh    # Linux package updater
 │   ├── Update-AllPackages_Mac.sh      # macOS package updater
 │   ├── Setup-PackageUpdateTasks.ps1   # Windows Task Scheduler setup
+│   ├── Setup-PackageUpdateTasks_Linux.sh # Linux cron setup
+│   ├── Setup-PackageUpdateTasks_Mac.sh # macOS launchd setup
 │   ├── Update-CloudflareDNS.ps1       # Dynamic DNS
 │   ├── clean_plex.ps1                # Plex cleanup
 │   ├── list_apps.ps1                 # List installed apps

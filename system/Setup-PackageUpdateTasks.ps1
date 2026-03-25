@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    Sets up Windows Task Scheduler task for weekly package updates.
+    Sets up Windows Task Scheduler tasks for weekly package updates.
 .DESCRIPTION
-    Creates a scheduled task to run Update-AllPackages.ps1 every Saturday at 1:00 AM.
-    Can also be used to update or remove the scheduled task.
+    Creates a scheduled task to run Update-AllPackages_Win.ps1 every Saturday at 1:00 AM.
+    Can also be used to update or remove scheduled tasks and clean up legacy entries.
 .PARAMETER Remove
     Remove the scheduled task instead of creating it.
 .PARAMETER InstallBurntToast
@@ -24,6 +24,40 @@ param(
 $TaskName = "Weekly Package Updates"
 $ScriptDir = $PSScriptRoot
 $UpdateScript = Join-Path $ScriptDir "Update-AllPackages_Win.ps1"
+
+function Get-PackageUpdateTasks {
+    try {
+        @(Get-ScheduledTask -ErrorAction Stop | Where-Object {
+            $_.TaskName -eq $TaskName -or
+            ($_.Actions | Where-Object {
+                $_.Execute -match 'powershell(\.exe)?$' -and
+                $_.Arguments -like "*Update-AllPackages_Win.ps1*"
+            })
+        })
+    }
+    catch {
+        @()
+    }
+}
+
+function Remove-PackageUpdateTasks {
+    param(
+        [switch]$SilentIfMissing
+    )
+
+    $Tasks = Get-PackageUpdateTasks | Sort-Object TaskPath, TaskName -Unique
+    if (-not $Tasks) {
+        if (-not $SilentIfMissing) {
+            Write-Status "No scheduled package update tasks found" -Level Warning
+        }
+        return
+    }
+
+    foreach ($Task in $Tasks) {
+        Write-Status "Removing scheduled task: $($Task.TaskPath)$($Task.TaskName)" -Level Info
+        Unregister-ScheduledTask -TaskName $Task.TaskName -TaskPath $Task.TaskPath -Confirm:$false
+    }
+}
 
 function Write-Status {
     param(
@@ -76,18 +110,9 @@ if ($InstallBurntToast) {
 # ============================================================================
 
 if ($Remove) {
-    Write-Status "Removing scheduled task: $TaskName" -Level Info
-    
     try {
-        $ExistingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-        
-        if ($ExistingTask) {
-            Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-            Write-Status "Scheduled task removed successfully" -Level Success
-        }
-        else {
-            Write-Status "Scheduled task not found - nothing to remove" -Level Warning
-        }
+        Remove-PackageUpdateTasks
+        Write-Status "Package update scheduled task cleanup completed" -Level Success
     }
     catch {
         Write-Status "Failed to remove scheduled task: $($_.Exception.Message)" -Level Error
@@ -106,17 +131,12 @@ Write-Status "Script to run: $UpdateScript" -Level Info
 # Verify the update script exists
 if (-not (Test-Path $UpdateScript)) {
     Write-Status "Update script not found at: $UpdateScript" -Level Error
-    Write-Status "Please ensure Update-AllPackages.ps1 is in the same directory as this script" -Level Error
+    Write-Status "Please ensure Update-AllPackages_Win.ps1 is in the same directory as this script" -Level Error
     exit 1
 }
 
 try {
-    # Remove existing task if it exists
-    $ExistingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    if ($ExistingTask) {
-        Write-Status "Removing existing task to recreate..." -Level Info
-        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-    }
+    Remove-PackageUpdateTasks -SilentIfMissing
     
     # Create the action - run PowerShell with the script
     $Action = New-ScheduledTaskAction `
@@ -124,7 +144,7 @@ try {
         -Argument "-ExecutionPolicy Bypass -NoExit -File `"$UpdateScript`"" `
         -WorkingDirectory $ScriptDir
     
-    # Create the trigger - every Saturday at 1:00 PM
+    # Create the trigger - every Saturday at 1:00 AM
     $Trigger = New-ScheduledTaskTrigger `
         -Weekly `
         -DaysOfWeek Saturday `

@@ -43,10 +43,18 @@ Antigravity Sync scripts provide a unified way to manage your IDE configuration 
 | [`Update-AllPackages_Linux.sh`](system/Update-AllPackages_Linux.sh) | Linux (Ubuntu) package updater (apt, snap, flatpak, npm). |
 | [`Update-AllPackages_Mac.sh`](system/Update-AllPackages_Mac.sh) | macOS package updater (brew, mas, npm). |
 | [`Setup-PackageUpdateTasks.ps1`](system/Setup-PackageUpdateTasks.ps1) | Sets up a Windows Task Scheduler task to run `Update-AllPackages_Win.ps1` weekly. |
+| [`Setup-PackageUpdateTasks_Linux.sh`](system/Setup-PackageUpdateTasks_Linux.sh) | Installs or removes the Linux weekly cron schedule and cleans up legacy crontab entries. |
+| [`Setup-PackageUpdateTasks_Mac.sh`](system/Setup-PackageUpdateTasks_Mac.sh) | Installs or removes the macOS weekly launchd job for package updates. |
 | [`Update-CloudflareDNS.ps1`](system/Update-CloudflareDNS.ps1) | Dynamic DNS updater for Cloudflare. Updates a DNS record with your current public IP address. |
 | [`clean_plex.ps1`](system/clean_plex.ps1) | Cleans up orphaned data, caches, logs, and temporary files in Plex Media Server. Triggers Plex's internal cleanup tasks via API. |
 | [`list_apps.ps1`](system/list_apps.ps1) | Lists installed applications from multiple sources: Registry, Microsoft Store, Winget, Chocolatey, Scoop, and npm. |
 | [`restart_camera_hub.ps1`](system/restart_camera_hub.ps1) | Restarts the Elgato Camera Hub application. |
+
+Package updater scripts no longer schedule themselves when you run them manually. Use the platform-specific setup script to install or remove the weekly schedule:
+
+- Windows: `system/Setup-PackageUpdateTasks.ps1`
+- Linux: `system/Setup-PackageUpdateTasks_Linux.sh`
+- macOS: `system/Setup-PackageUpdateTasks_Mac.sh`
 
 ### Finance Tools
 
