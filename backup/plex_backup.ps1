@@ -127,12 +127,10 @@ try {
     $ExcludeArgs = @("/XD") + $ExcludeDirs
     Write-Log "  Excluding directories: $($ExcludeDirs -join ', ')"
 
-    # Run robocopy directly so its native output streams to the console
+    # Run robocopy directly — output streams to console in real time
     Write-Log "  Running robocopy..."
-    $robocopyOutput = robocopy $PlexDataPath $WorkingDataDir /E /R:1 /W:1 /NDL /NJH @ExcludeArgs 2>&1
+    robocopy $PlexDataPath $WorkingDataDir /E /R:1 /W:1 /NDL /NJH @ExcludeArgs
     $robocopyExit = $LASTEXITCODE
-    # Show robocopy summary lines
-    $robocopyOutput | ForEach-Object { $line = "$_".Trim(); if ($line) { Write-Host "  $line" } }
 
     # Robocopy exit codes: 0-7 are success (bitmask of copied/skipped/mismatched), 8+ are errors
     if ($robocopyExit -ge 8) {
