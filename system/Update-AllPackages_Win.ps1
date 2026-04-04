@@ -1,8 +1,9 @@
 <#
 .SYNOPSIS
-    Weekly package update script for winget, Chocolatey, and npm.
+    Weekly package update script for winget, Chocolatey, npm, WSL apt, and pip.
 .DESCRIPTION
-    Updates all packages from winget, Chocolatey (both admin and user), and npm global packages.
+    Updates all packages from winget, Chocolatey, npm global packages,
+    WSL Ubuntu (apt), and pip global packages.
     Logs all output to a timestamped file and shows toast notifications.
 .NOTES
     Author: Auto-generated
@@ -15,6 +16,8 @@ param(
     [switch]$SkipUserChocolatey,
     [switch]$SkipWinget,
     [switch]$SkipNpm,
+    [switch]$SkipWsl,
+    [switch]$SkipPip,
     [switch]$Elevated
 )
 
@@ -36,6 +39,8 @@ $Results = @{
     ChocolateyAdmin = @{ Status = "Skipped"; Message = "" }
     ChocolateyUser  = @{ Status = "Skipped"; Message = "" }
     Npm             = @{ Status = "Skipped"; Message = "" }
+    Wsl             = @{ Status = "Skipped"; Message = "" }
+    Pip             = @{ Status = "Skipped"; Message = "" }
 }
 
 # ============================================================================
@@ -171,7 +176,7 @@ function Update-Winget {
         Write-Log "Running: winget upgrade --all --include-unknown --accept-package-agreements --accept-source-agreements" -Level Info
         
         & winget upgrade --all --include-unknown --accept-package-agreements --accept-source-agreements
-        
+
         if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) {
             $script:Results.Winget.Status = "Success"
             $script:Results.Winget.Message = "Winget packages updated successfully"
@@ -181,6 +186,17 @@ function Update-Winget {
             $script:Results.Winget.Status = "Warning"
             $script:Results.Winget.Message = "Winget completed with exit code: $LASTEXITCODE"
             Write-Log "Winget completed with exit code: $LASTEXITCODE" -Level Warning
+        }
+
+        # Explicitly upgrade PowerShell — winget upgrade --all often skips it
+        # due to MSI installer detection issues
+        Write-Log "Ensuring PowerShell 7+ is up to date..." -Level Info
+        & winget upgrade Microsoft.PowerShell --accept-package-agreements --accept-source-agreements
+        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) {
+            Write-Log "PowerShell upgrade check completed" -Level Success
+        }
+        else {
+            Write-Log "PowerShell upgrade completed with exit code: $LASTEXITCODE (may already be current)" -Level Warning
         }
     }
     catch {
@@ -224,6 +240,103 @@ function Update-Chocolatey {
     }
 }
 
+
+function Update-WslPackages {
+    Write-Log "=" * 60 -Level Info
+    Write-Log "STARTING WSL UBUNTU APT UPDATES" -Level Info
+    Write-Log "=" * 60 -Level Info
+
+    try {
+        $WslPath = Get-Command wsl.exe -ErrorAction Stop
+        Write-Log "Found wsl at: $($WslPath.Source)" -Level Info
+
+        # Verify Ubuntu distro is available
+        # wsl.exe -l outputs UTF-16LE with null chars; strip them for reliable matching
+        $RawDistros = & wsl.exe -l -q 2>&1 | Out-String
+        $CleanDistros = $RawDistros -replace "`0", ""
+        if ($CleanDistros -notmatch "Ubuntu") {
+            throw "Ubuntu WSL distro not found (installed: $($CleanDistros.Trim()))"
+        }
+
+        Write-Log "Running: apt-get update && apt-get upgrade && apt-get autoremove" -Level Info
+
+        & wsl.exe -d Ubuntu -- bash -c "sudo apt-get update -y && sudo apt-get upgrade -y && sudo apt-get autoremove -y"
+
+        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) {
+            $script:Results.Wsl.Status = "Success"
+            $script:Results.Wsl.Message = "WSL Ubuntu packages updated successfully"
+            Write-Log "WSL Ubuntu updates completed successfully" -Level Success
+        }
+        else {
+            $script:Results.Wsl.Status = "Warning"
+            $script:Results.Wsl.Message = "WSL apt completed with exit code: $LASTEXITCODE"
+            Write-Log "WSL apt completed with exit code: $LASTEXITCODE" -Level Warning
+        }
+    }
+    catch {
+        $script:Results.Wsl.Status = "Error"
+        $script:Results.Wsl.Message = $_.Exception.Message
+        Write-Log "WSL Ubuntu update failed: $($_.Exception.Message)" -Level Error
+        Show-ToastNotification -Title "WSL Update Failed" -Message $_.Exception.Message -Type Error
+    }
+}
+
+function Update-Pip {
+    Write-Log "=" * 60 -Level Info
+    Write-Log "STARTING PIP UPDATES" -Level Info
+    Write-Log "=" * 60 -Level Info
+
+    try {
+        $PipPath = Get-Command pip -ErrorAction Stop
+        Write-Log "Found pip at: $($PipPath.Source)" -Level Info
+
+        # Upgrade pip itself first
+        Write-Log "Upgrading pip itself..." -Level Info
+        & pip install --upgrade pip 2>&1 | ForEach-Object { Write-Log $_ -Level Info }
+
+        # Get outdated packages as JSON
+        Write-Log "Checking for outdated packages..." -Level Info
+        $OutdatedJson = & pip list --outdated --format=json 2>&1
+
+        $Outdated = @()
+        try {
+            $Outdated = $OutdatedJson | ConvertFrom-Json
+        }
+        catch {
+            Write-Log "Could not parse pip outdated output" -Level Warning
+        }
+
+        if ($Outdated.Count -gt 0) {
+            $PackageNames = $Outdated | ForEach-Object { $_.name }
+            $PackageList = $PackageNames -join " "
+            Write-Log "Updating $($Outdated.Count) packages: $PackageList" -Level Info
+
+            & pip install --upgrade @PackageNames
+
+            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) {
+                $script:Results.Pip.Status = "Warning"
+                $script:Results.Pip.Message = "pip completed with exit code: $LASTEXITCODE"
+                Write-Log "pip completed with exit code: $LASTEXITCODE" -Level Warning
+                return
+            }
+
+            $script:Results.Pip.Status = "Success"
+            $script:Results.Pip.Message = "pip packages updated successfully ($($Outdated.Count) upgraded)"
+            Write-Log "pip updates completed successfully" -Level Success
+        }
+        else {
+            $script:Results.Pip.Status = "Success"
+            $script:Results.Pip.Message = "pip packages are already up-to-date"
+            Write-Log "pip packages are already up-to-date" -Level Success
+        }
+    }
+    catch {
+        $script:Results.Pip.Status = "Error"
+        $script:Results.Pip.Message = $_.Exception.Message
+        Write-Log "pip update failed: $($_.Exception.Message)" -Level Error
+        Show-ToastNotification -Title "pip Update Failed" -Message $_.Exception.Message -Type Error
+    }
+}
 
 function Update-NpmGlobal {
     Write-Log "=" * 60 -Level Info
@@ -372,7 +485,7 @@ if ($OldLogs) {
 }
 
 # Show start notification
-Show-ToastNotification -Title "Package Updates Starting" -Message "Updating winget, Chocolatey, and npm packages..." -Type Info
+Show-ToastNotification -Title "Package Updates Starting" -Message "Updating winget, Chocolatey, npm, WSL apt, and pip packages..." -Type Info
 
 # Handle split execution (User vs Elevated)
 
@@ -399,6 +512,8 @@ if (-not $IsAdmin -and -not $Elevated) {
         if ($SkipWinget) { $RelaunchArgs += "-SkipWinget" }
         if ($SkipAdminChocolatey) { $RelaunchArgs += "-SkipAdminChocolatey" }
         if ($SkipNpm) { $RelaunchArgs += "-SkipNpm" }
+        if ($SkipWsl) { $RelaunchArgs += "-SkipWsl" }
+        if ($SkipPip) { $RelaunchArgs += "-SkipPip" }
         $RelaunchArgs += "-SkipUserChocolatey" # Handled in this process
         
         Start-Process "powershell.exe" -ArgumentList $RelaunchArgs -Verb RunAs -Wait
@@ -412,6 +527,8 @@ else {
     if (-not $SkipWinget) { Update-Winget }
     if (-not $SkipAdminChocolatey -or -not $SkipUserChocolatey) { Update-Chocolatey }
     if (-not $SkipNpm) { Update-NpmGlobal }
+    if (-not $SkipWsl) { Update-WslPackages }
+    if (-not $SkipPip) { Update-Pip }
 }
 
 # Stop Transcript
