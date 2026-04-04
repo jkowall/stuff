@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # SYNOPSIS
-#     Weekly package update script for apt, snap, flatpak, and npm.
+#     Weekly package update script for apt, snap, flatpak, npm, and pip.
 # DESCRIPTION
-#     Updates all packages from apt, snap, flatpak, and npm global packages.
+#     Updates all packages from apt, snap, flatpak, npm global packages, and pip.
 #     Logs all output to a timestamped file and shows desktop notifications.
 
 # ============================================================================
@@ -21,6 +21,7 @@ APT_STATUS="Skipped"
 SNAP_STATUS="Skipped"
 FLATPAK_STATUS="Skipped"
 NPM_STATUS="Skipped"
+PIP_STATUS="Skipped"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -161,6 +162,60 @@ update_npm() {
     fi
 }
 
+update_pip() {
+    if ! command -v pip3 >/dev/null 2>&1; then
+        log "Info" "pip3 not installed. Skipping."
+        return
+    fi
+
+    log "Info" "============================================================"
+    log "Info" "STARTING PIP UPDATES"
+    log "Info" "============================================================"
+
+    log "Info" "Upgrading pip itself..."
+    pip3 install --upgrade pip 2>&1 | tee -a "$LOG_FILE"
+
+    log "Info" "Checking for outdated packages..."
+    OUTDATED_JSON=$(pip3 list --outdated --format=json 2>/dev/null) || true
+
+    if [ -z "$OUTDATED_JSON" ] || [ "$OUTDATED_JSON" = "[]" ]; then
+        PIP_STATUS="Success"
+        log "Success" "pip packages are already up-to-date"
+        return
+    fi
+
+    PACKAGES=$(echo "$OUTDATED_JSON" | python3 -c "import sys,json; print(' '.join(p['name'] for p in json.load(sys.stdin)))" 2>/dev/null) || true
+
+    if [ -z "$PACKAGES" ]; then
+        PIP_STATUS="Success"
+        log "Success" "pip packages are already up-to-date"
+        return
+    fi
+
+    log "Info" "Found outdated packages: $(echo $PACKAGES | tr ' ' ', ')"
+
+    # Upgrade one at a time to avoid dependency conflicts
+    local succeeded=0
+    local failed=""
+    for pkg in $PACKAGES; do
+        if pip3 install --upgrade "$pkg" >> "$LOG_FILE" 2>&1; then
+            log "Success" "  Upgraded $pkg"
+            succeeded=$((succeeded + 1))
+        else
+            log "Warning" "  Failed to upgrade $pkg (dependency conflict)"
+            failed="$failed $pkg"
+        fi
+    done
+
+    if [ -n "$failed" ]; then
+        PIP_STATUS="Warning"
+        log "Warning" "pip: $succeeded upgraded, some skipped due to dependency conflicts:$failed"
+    else
+        PIP_STATUS="Success"
+        log "Success" "pip updates completed successfully ($succeeded upgraded)"
+    fi
+}
+
 show_summary() {
     echo ""
     log "Info" "============================================================"
@@ -173,8 +228,9 @@ show_summary() {
     echo -e "SNAP:     $SNAP_STATUS"
     echo -e "FLATPAK:  $FLATPAK_STATUS"
     echo -e "NPM:      $NPM_STATUS"
+    echo -e "PIP:      $PIP_STATUS"
 
-    if [[ "$APT_STATUS" == "Error" || "$SNAP_STATUS" == "Error" || "$FLATPAK_STATUS" == "Error" || "$NPM_STATUS" == "Error" ]]; then
+    if [[ "$APT_STATUS" == "Error" || "$SNAP_STATUS" == "Error" || "$FLATPAK_STATUS" == "Error" || "$NPM_STATUS" == "Error" || "$PIP_STATUS" == "Error" ]]; then
         has_errors=true
     fi
 
@@ -234,6 +290,7 @@ update_apt
 update_snap
 update_flatpak
 update_npm
+update_pip
 
 # Summary
 show_summary
