@@ -172,9 +172,19 @@ function Update-Winget {
         $WingetPath = Get-Command winget -ErrorAction Stop
         Write-Log "Found winget at: $($WingetPath.Source)" -Level Info
         
+        # Pin packages with broken version detection so they don't re-upgrade every run
+        $WingetPins = @("Syncthing.Syncthing")
+        foreach ($Pin in $WingetPins) {
+            & winget pin list | Select-String -Quiet $Pin
+            if (-not $?) {
+                Write-Log "Pinning $Pin (broken version detection)" -Level Info
+                & winget pin add $Pin --blocking 2>&1 | Out-Null
+            }
+        }
+
         # Run winget upgrade directly to preserve progress bars
         Write-Log "Running: winget upgrade --all --include-unknown --accept-package-agreements --accept-source-agreements" -Level Info
-        
+
         & winget upgrade --all --include-unknown --accept-package-agreements --accept-source-agreements
 
         if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) {
