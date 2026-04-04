@@ -318,21 +318,36 @@ function Update-Pip {
 
         if ($Outdated.Count -gt 0) {
             $PackageNames = $Outdated | ForEach-Object { $_.name }
-            $PackageList = $PackageNames -join " "
-            Write-Log "Updating $($Outdated.Count) packages: $PackageList" -Level Info
+            $PackageList = $PackageNames -join ", "
+            Write-Log "Found $($Outdated.Count) outdated packages: $PackageList" -Level Info
 
-            & pip install --upgrade @PackageNames
-
-            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) {
-                $script:Results.Pip.Status = "Warning"
-                $script:Results.Pip.Message = "pip completed with exit code: $LASTEXITCODE"
-                Write-Log "pip completed with exit code: $LASTEXITCODE" -Level Warning
-                return
+            # Upgrade one at a time to avoid dependency conflicts —
+            # packages with upper-bound constraints (e.g. pylint->astroid,
+            # torch->setuptools) will fail individually instead of breaking the batch
+            $Succeeded = 0
+            $Failed = @()
+            foreach ($Pkg in $PackageNames) {
+                & pip install --upgrade $Pkg 2>&1 | Out-Null
+                if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) {
+                    Write-Log "  Failed to upgrade $Pkg (dependency conflict)" -Level Warning
+                    $Failed += $Pkg
+                }
+                else {
+                    Write-Log "  Upgraded $Pkg" -Level Success
+                    $Succeeded++
+                }
             }
 
-            $script:Results.Pip.Status = "Success"
-            $script:Results.Pip.Message = "pip packages updated successfully ($($Outdated.Count) upgraded)"
-            Write-Log "pip updates completed successfully" -Level Success
+            if ($Failed.Count -gt 0) {
+                $script:Results.Pip.Status = "Warning"
+                $script:Results.Pip.Message = "$Succeeded upgraded, $($Failed.Count) skipped (dependency conflicts): $($Failed -join ', ')"
+                Write-Log "pip: $Succeeded upgraded, $($Failed.Count) skipped due to dependency conflicts" -Level Warning
+            }
+            else {
+                $script:Results.Pip.Status = "Success"
+                $script:Results.Pip.Message = "pip packages updated successfully ($Succeeded upgraded)"
+                Write-Log "pip updates completed successfully" -Level Success
+            }
         }
         else {
             $script:Results.Pip.Status = "Success"
