@@ -40,8 +40,8 @@ Antigravity Sync scripts provide a unified way to manage your IDE configuration 
 | Script | Description |
 |--------|-------------|
 | [`Update-AllPackages_Win.ps1`](system/Update-AllPackages_Win.ps1) | Weekly update script for winget, Chocolatey, and npm packages (Windows). |
-| [`Update-AllPackages_Linux.sh`](system/Update-AllPackages_Linux.sh) | Linux (Ubuntu) package updater (apt, snap, flatpak, npm). |
-| [`Update-AllPackages_Mac.sh`](system/Update-AllPackages_Mac.sh) | macOS package updater (brew, mas, npm). |
+| [`Update-AllPackages_Linux.sh`](system/Update-AllPackages_Linux.sh) | Linux (Ubuntu) package updater (apt, snap, flatpak, npm, pip, rustup). |
+| [`Update-AllPackages_Mac.sh`](system/Update-AllPackages_Mac.sh) | macOS package updater (brew, mas, npm, pip, rustup). |
 | [`Setup-PackageUpdateTasks.ps1`](system/Setup-PackageUpdateTasks.ps1) | Sets up a Windows Task Scheduler task to run `Update-AllPackages_Win.ps1` weekly. |
 | [`Setup-PackageUpdateTasks_Linux.sh`](system/Setup-PackageUpdateTasks_Linux.sh) | Installs or removes the Linux weekly cron schedule and cleans up legacy crontab entries. |
 | [`Setup-PackageUpdateTasks_Mac.sh`](system/Setup-PackageUpdateTasks_Mac.sh) | Installs or removes the macOS weekly launchd job for package updates. |
