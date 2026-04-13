@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # SYNOPSIS
-#     Weekly package update script for Homebrew, mas, npm, and pip on macOS.
+#     Weekly package update script for Homebrew, mas, npm, pip, and rustup on macOS.
 # DESCRIPTION
-#     Updates all packages from Homebrew (formulae and casks), Mac App Store (via mas), npm global packages, and pip.
+#     Updates all packages from Homebrew (formulae and casks), Mac App Store (via mas), npm global packages, pip, and rustup-managed Rust toolchains.
 #     Logs all output to a timestamped file and shows desktop notifications.
 
 # ============================================================================
@@ -22,6 +22,7 @@ BREW_STATUS="Skipped"
 MAS_STATUS="Skipped"
 NPM_STATUS="Skipped"
 PIP_STATUS="Skipped"
+RUSTUP_STATUS="Skipped"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -205,6 +206,39 @@ update_pip() {
     fi
 }
 
+update_rustup() {
+    if ! command -v rustup >/dev/null 2>&1; then
+        log "Info" "rustup not installed. Skipping."
+        return
+    fi
+
+    log "Info" "============================================================"
+    log "Info" "STARTING RUSTUP UPDATES"
+    log "Info" "============================================================"
+
+    log "Info" "Checking for rustup and toolchain updates..."
+    local check_output=""
+    if ! check_output=$(rustup check 2>&1 | tee -a "$LOG_FILE"); then
+        RUSTUP_STATUS="Warning"
+        log "Warning" "rustup check encountered issues."
+        return
+    fi
+
+    if echo "$check_output" | grep -q "Update available"; then
+        log "Info" "Running: rustup update"
+        if rustup update 2>&1 | tee -a "$LOG_FILE"; then
+            RUSTUP_STATUS="Success"
+            log "Success" "rustup updates completed successfully"
+        else
+            RUSTUP_STATUS="Warning"
+            log "Warning" "rustup update encountered issues."
+        fi
+    else
+        RUSTUP_STATUS="Success"
+        log "Success" "Rust toolchains are already up-to-date"
+    fi
+}
+
 show_summary() {
     echo ""
     log "Info" "============================================================"
@@ -217,8 +251,9 @@ show_summary() {
     echo "App Store: $MAS_STATUS"
     echo "NPM:       $NPM_STATUS"
     echo "PIP:       $PIP_STATUS"
+    echo "Rustup:    $RUSTUP_STATUS"
 
-    if [[ "$BREW_STATUS" == "Error" || "$MAS_STATUS" == "Error" || "$NPM_STATUS" == "Error" || "$PIP_STATUS" == "Error" ]]; then
+    if [[ "$BREW_STATUS" == "Error" || "$MAS_STATUS" == "Error" || "$NPM_STATUS" == "Error" || "$PIP_STATUS" == "Error" || "$RUSTUP_STATUS" == "Error" ]]; then
         has_errors=true
     fi
 
@@ -261,13 +296,14 @@ fi
 cleanup_logs
 
 # Show start notification
-show_notification "Package Updates" "Starting updates for Homebrew, App Store, npm, and pip..."
+show_notification "Package Updates" "Starting updates for Homebrew, App Store, npm, pip, and rustup..."
 
 # Run Updates
 update_brew
 update_mas
 update_npm
 update_pip
+update_rustup
 
 # Summary
 show_summary

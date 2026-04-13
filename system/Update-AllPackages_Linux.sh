@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # SYNOPSIS
-#     Weekly package update script for apt, snap, flatpak, npm, and pip.
+#     Weekly package update script for apt, snap, flatpak, npm, pip, and rustup.
 # DESCRIPTION
-#     Updates all packages from apt, snap, flatpak, npm global packages, and pip.
+#     Updates all packages from apt, snap, flatpak, npm global packages, pip, and rustup-managed Rust toolchains.
 #     Logs all output to a timestamped file and shows desktop notifications.
 
 # ============================================================================
@@ -22,6 +22,7 @@ SNAP_STATUS="Skipped"
 FLATPAK_STATUS="Skipped"
 NPM_STATUS="Skipped"
 PIP_STATUS="Skipped"
+RUSTUP_STATUS="Skipped"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -223,6 +224,39 @@ update_pip() {
     fi
 }
 
+update_rustup() {
+    if ! command -v rustup >/dev/null 2>&1; then
+        log "Info" "rustup not installed. Skipping."
+        return
+    fi
+
+    log "Info" "============================================================"
+    log "Info" "STARTING RUSTUP UPDATES"
+    log "Info" "============================================================"
+
+    log "Info" "Checking for rustup and toolchain updates..."
+    local check_output=""
+    if ! check_output=$(rustup check 2>&1 | tee -a "$LOG_FILE"); then
+        RUSTUP_STATUS="Warning"
+        log "Warning" "rustup check encountered issues."
+        return
+    fi
+
+    if echo "$check_output" | grep -q "Update available"; then
+        log "Info" "Running: rustup update"
+        if rustup update 2>&1 | tee -a "$LOG_FILE"; then
+            RUSTUP_STATUS="Success"
+            log "Success" "rustup updates completed successfully"
+        else
+            RUSTUP_STATUS="Warning"
+            log "Warning" "rustup update encountered issues."
+        fi
+    else
+        RUSTUP_STATUS="Success"
+        log "Success" "Rust toolchains are already up-to-date"
+    fi
+}
+
 show_summary() {
     echo ""
     log "Info" "============================================================"
@@ -236,14 +270,16 @@ show_summary() {
     echo -e "FLATPAK:  $FLATPAK_STATUS"
     echo -e "NPM:      $NPM_STATUS"
     echo -e "PIP:      $PIP_STATUS"
+    echo -e "RUSTUP:   $RUSTUP_STATUS"
 
     log "Info" "APT:      $APT_STATUS"
     log "Info" "SNAP:     $SNAP_STATUS"
     log "Info" "FLATPAK:  $FLATPAK_STATUS"
     log "Info" "NPM:      $NPM_STATUS"
     log "Info" "PIP:      $PIP_STATUS"
+    log "Info" "RUSTUP:   $RUSTUP_STATUS"
 
-    if [[ "$APT_STATUS" == "Error" || "$SNAP_STATUS" == "Error" || "$FLATPAK_STATUS" == "Error" || "$NPM_STATUS" == "Error" || "$PIP_STATUS" == "Error" ]]; then
+    if [[ "$APT_STATUS" == "Error" || "$SNAP_STATUS" == "Error" || "$FLATPAK_STATUS" == "Error" || "$NPM_STATUS" == "Error" || "$PIP_STATUS" == "Error" || "$RUSTUP_STATUS" == "Error" ]]; then
         has_errors=true
     fi
 
@@ -291,11 +327,11 @@ cleanup_logs
 # We use SUDO_USER if available to try and show it on the correct desktop.
 if [ -n "$SUDO_USER" ]; then
     if ! sudo -u "$SUDO_USER" DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u "$SUDO_USER")/bus \
-        notify-send -u low "Package Updates" "Starting updates for apt, snap, flatpak, and npm..." >/dev/null 2>&1; then
+        notify-send -u low "Package Updates" "Starting updates for apt, snap, flatpak, npm, pip, and rustup..." >/dev/null 2>&1; then
         log "Info" "Desktop notification environment unavailable. Skipping start notification."
     fi
 else
-    show_notification "Package Updates Starting" "Updating apt, snap, flatpak, and npm packages..." "low"
+    show_notification "Package Updates Starting" "Updating apt, snap, flatpak, npm, pip, and rustup packages..." "low"
 fi
 
 # Run Updates
@@ -304,6 +340,7 @@ update_snap
 update_flatpak
 update_npm
 update_pip
+update_rustup
 
 # Summary
 show_summary
