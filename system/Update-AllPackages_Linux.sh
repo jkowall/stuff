@@ -13,7 +13,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}" .sh)"
 MACHINE_NAME="$(hostname)"
-TIMESTAMP="$(date +%Y-%m-%d_%H-%m)"
+TIMESTAMP="$(date +%Y-%m-%d_%H-%M)"
 LOG_FILE="${SCRIPT_DIR}/${SCRIPT_NAME}_${MACHINE_NAME}_${TIMESTAMP}.log"
 
 # Status tracking
@@ -143,29 +143,36 @@ update_npm() {
     log "Info" "STARTING NPM GLOBAL UPDATES"
     log "Info" "============================================================"
 
-    log "Info" "Checking for outdated NPM packages..."
-    # npm outdated exits with 1 if packages are outdated
-    OUTDATED=$(npm outdated -g --parseable 2>/dev/null | awk -F: 'NF>=4 {print $(NF-2)}') || true
-    
-    if [ -n "$OUTDATED" ]; then
-        log "Info" "Updating packages: $(echo $OUTDATED | tr '\n' ' ')"
-        if npm install -g $OUTDATED >> "$LOG_FILE" 2>&1; then
-            NPM_STATUS="Success"
-            log "Success" "NPM global updates completed successfully"
-        else
-            NPM_STATUS="Warning"
-            log "Warning" "NPM update encountered issues."
-        fi
-    else
+    log "Info" "Running: npm update -g"
+    if npm update -g >> "$LOG_FILE" 2>&1; then
         NPM_STATUS="Success"
-        log "Success" "NPM global packages are already up-to-date"
+        log "Success" "NPM global updates completed successfully"
+    else
+        NPM_STATUS="Warning"
+        log "Warning" "NPM update encountered issues."
     fi
 }
 
 update_pip() {
     if ! command -v pip3 >/dev/null 2>&1; then
-        log "Info" "pip3 not installed. Skipping."
-        return
+        log "Warning" "pip3 not found. Attempting to install..."
+        if [ -t 0 ]; then
+             read -p "pip3 is missing. Would you like to install it? (y/n) " -n 1 -r
+             echo
+             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                 log "Info" "User declined pip3 installation. Skipping."
+                 PIP_STATUS="Skipped"
+                 return
+             fi
+        fi
+        
+        if apt-get install -y python3-pip >> "$LOG_FILE" 2>&1; then
+            log "Success" "pip3 installed successfully"
+        else
+            log "Error" "Failed to install pip3. Skipping PIP updates."
+            PIP_STATUS="Error"
+            return
+        fi
     fi
 
     log "Info" "============================================================"
@@ -173,7 +180,7 @@ update_pip() {
     log "Info" "============================================================"
 
     log "Info" "Upgrading pip itself..."
-    pip3 install --upgrade pip 2>&1 | tee -a "$LOG_FILE"
+    pip3 install --upgrade pip --break-system-packages 2>&1 | tee -a "$LOG_FILE"
 
     log "Info" "Checking for outdated packages..."
     OUTDATED_JSON=$(pip3 list --outdated --format=json 2>/dev/null) || true
@@ -198,7 +205,7 @@ update_pip() {
     local succeeded=0
     local failed=""
     for pkg in $PACKAGES; do
-        if pip3 install --upgrade "$pkg" >> "$LOG_FILE" 2>&1; then
+        if pip3 install --upgrade "$pkg" --break-system-packages >> "$LOG_FILE" 2>&1; then
             log "Success" "  Upgraded $pkg"
             succeeded=$((succeeded + 1))
         else
@@ -229,6 +236,12 @@ show_summary() {
     echo -e "FLATPAK:  $FLATPAK_STATUS"
     echo -e "NPM:      $NPM_STATUS"
     echo -e "PIP:      $PIP_STATUS"
+
+    log "Info" "APT:      $APT_STATUS"
+    log "Info" "SNAP:     $SNAP_STATUS"
+    log "Info" "FLATPAK:  $FLATPAK_STATUS"
+    log "Info" "NPM:      $NPM_STATUS"
+    log "Info" "PIP:      $PIP_STATUS"
 
     if [[ "$APT_STATUS" == "Error" || "$SNAP_STATUS" == "Error" || "$FLATPAK_STATUS" == "Error" || "$NPM_STATUS" == "Error" || "$PIP_STATUS" == "Error" ]]; then
         has_errors=true
