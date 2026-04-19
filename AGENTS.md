@@ -23,6 +23,9 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 | `Antigravity_Sync_Win.json` | Personal backup directory path |
 | `Antigravity_Sync_Mac.json` | Personal backup directory path |
 | `Antigravity_Sync_Linux.json` | Personal backup directory path |
+| `LLM_Sync_Win.json` | Personal backup directory path |
+| `LLM_Sync_Mac.json` | Personal backup directory path |
+| `LLM_Sync_Linux.json` | Personal backup directory path |
 | `plex_backup.json` | Local paths for Plex data, backups, and tools |
 
 **Never hardcode personal data directly in scripts.** Always ensure scripts point to the centralized location in the `Private` repository.
@@ -48,6 +51,7 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 - **`system/Update-CloudflareDNS.ps1`** - Makes external API calls to Cloudflare
 - **`backup/plex_backup.ps1`** - Requires admin privileges, stops Plex services during backup
 - **`backup/Antigravity_Sync_*`** - Cross-platform sync suite (Win/Mac/Linux) with versioning, safety backups, and extension reconciliation
+- **`backup/LLM_Sync_*`** - Cross-platform sync suite (Win/Mac/Linux) for portable Codex, Gemini, Claude, and shared `.skills` settings
 - **`finance_tools/schwab_sync.py`** - Portfolio sync with Seeking Alpha; supports email reports and history tracking
 
 ## Coding Guidelines
@@ -129,6 +133,9 @@ git config commit.gpgsign true
 │   ├── Antigravity_Sync_Win.ps1       # Windows Antigravity sync (Git-integrated)
 │   ├── Antigravity_Sync_Mac.sh        # macOS Antigravity sync (Git-integrated)
 │   ├── Antigravity_Sync_Linux.sh      # Linux Antigravity sync (Git-integrated)
+│   ├── LLM_Sync_Win.ps1               # Windows Codex/Gemini/Claude/shared-skills sync
+│   ├── LLM_Sync_Mac.sh                # macOS Codex/Gemini/Claude/shared-skills sync
+│   ├── LLM_Sync_Linux.sh              # Linux Codex/Gemini/Claude/shared-skills sync
 │   └── plex_backup.ps1               # Plex Media Server backup
 │
 ├── system/                            # System Maintenance
