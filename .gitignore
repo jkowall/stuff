@@ -5,6 +5,9 @@
 Update-CloudflareDNS.json
 Antigravity_Sync_Win.json
 Antigravity_Sync_Mac.json
+LLM_Sync_Win.json
+LLM_Sync_Mac.json
+LLM_Sync_Linux.json
 plex_backup.json
 
 # macOS metadata and local artifacts

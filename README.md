@@ -8,6 +8,7 @@ A collection of PowerShell and shell scripts for system automation, backup, and 
 |------|-------------|
 | [`README.md`](README.md) | This file; documents all scripts and configuration |
 | [`AGENTS.md`](AGENTS.md) | Instructions for AI coding assistants working with this repo |
+| [`backup/README.md`](backup/README.md) | Detailed backup and sync workflow documentation |
 | [`LLM_Instructions.md`](LLM_Instructions.md) | Personal LLM preferences for use across AI services (not tracked in Git) |
 
 ## Scripts
@@ -28,11 +29,24 @@ Antigravity Sync scripts provide a unified way to manage your IDE configuration 
 - **Extension Reconciliation**: Compares locally installed extensions with the backup and warns you if you have local extensions that aren't backed up.
 - **Git Integration**: Optional prompt to pull latest changes from Git before sync and push updates after backup.
 
+LLM Sync scripts provide a separate cross-platform backup and restore flow for assistant home directories and an optional shared `~/.skills` folder.
+
+**Key Features:**
+
+- **Per-Assistant Subdirectories**: Each machine backup stores `codex/`, `gemini/`, `claude/`, and optional `shared-skills/` separately for safer restores.
+- **Conservative Whitelisting**: Sync only portable config, prompts, rules, memories, and skills. Skip auth/session files, caches, logs, local databases, and project-local conversation state.
+- **Safety Restore Flow**: Restore creates a pre-restore snapshot outside Git and can preview diffs for key text config files before overwrite.
+- **Scoped Git Integration**: Optional pull before sync and push after backup, staging only the selected backup subtree instead of unrelated repo changes.
+- **Dry Run Support**: Preview file operations and Git mutations before changing anything.
+
 | Script | Description |
 |--------|-------------|
 | [`Antigravity_Sync_Win.ps1`](backup/Antigravity_Sync_Win.ps1) | Primary sync tool for Windows. Supports WSL environments and integrated Git sync. |
 | [`Antigravity_Sync_Mac.sh`](backup/Antigravity_Sync_Mac.sh) | macOS implementation with feature parity and Git sync. |
 | [`Antigravity_Sync_Linux.sh`](backup/Antigravity_Sync_Linux.sh) | Linux implementation with feature parity and Git sync. |
+| [`LLM_Sync_Win.ps1`](backup/LLM_Sync_Win.ps1) | Windows backup and restore for portable Codex, Gemini, Claude, and shared `.skills` settings. Gemini restore skips volatile Antigravity state. |
+| [`LLM_Sync_Mac.sh`](backup/LLM_Sync_Mac.sh) | macOS backup and restore for portable Codex, Gemini, Claude, and shared `.skills` settings. Gemini restore skips volatile Antigravity state. |
+| [`LLM_Sync_Linux.sh`](backup/LLM_Sync_Linux.sh) | Linux backup and restore for portable Codex, Gemini, Claude, and shared `.skills` settings. Gemini restore skips volatile Antigravity state. |
 | [`plex_backup.ps1`](backup/plex_backup.ps1) | Backup Plex Media Server data and registry settings to a compressed 7z archive. Handles service stop/start automatically. |
 
 ### System Maintenance
@@ -96,9 +110,30 @@ Scripts that require personal configuration now use external JSON config files s
 | `Antigravity_Sync_Win.json` | `Antigravity_Sync_Win.ps1` | `BaseBackupPath`, `PreRestorePath` (optional) |
 | `Antigravity_Sync_Mac.json` | `Antigravity_Sync_Mac.sh` | `DefaultBackupPath`, `PreRestorePath` (optional) |
 | `Antigravity_Sync_Linux.json` | `Antigravity_Sync_Linux.sh` | `DefaultBackupPath`, `PreRestorePath` (optional) |
+| `LLM_Sync_Win.json` | `LLM_Sync_Win.ps1` | `BaseBackupPath`, `PreRestorePath` (optional) |
+| `LLM_Sync_Mac.json` | `LLM_Sync_Mac.sh` | `DefaultBackupPath`, `PreRestorePath` (optional) |
+| `LLM_Sync_Linux.json` | `LLM_Sync_Linux.sh` | `DefaultBackupPath`, `PreRestorePath` (optional) |
 | `plex_backup.json` | `plex_backup.ps1` | `PlexDataPath`, `BackupDestination`, `TempWorkingPath`, `7ZipPath` |
 
 ### Example Config Templates
+
+**LLM_Sync_Win.json:**
+
+```json
+{
+    "BaseBackupPath": "C:\\Users\\jkowa\\OneDrive\\Stuff\\assistant-backups",
+    "PreRestorePath": "D:\\tmp"
+}
+```
+
+**LLM_Sync_Mac.json / LLM_Sync_Linux.json:**
+
+```json
+{
+    "DefaultBackupPath": "~/assistant-backups",
+    "PreRestorePath": "/tmp"
+}
+```
 
 **Update-CloudflareDNS.json:**
 
@@ -120,6 +155,49 @@ Scripts that require personal configuration now use external JSON config files s
     "TempWorkingPath": "D:\\tmp",
     "7ZipPath": "C:\\path\\to\\7z.exe"
 }
+```
+
+### LLM Sync Examples
+
+**Windows backup (default machine folder):**
+
+```powershell
+.\backup\LLM_Sync_Win.ps1 -Action backup
+```
+
+**Windows versioned backup preview only:**
+
+```powershell
+.\backup\LLM_Sync_Win.ps1 -Action backup -Versioned -DryRun
+```
+
+**Windows restore preview using PowerShell WhatIf:**
+
+```powershell
+.\backup\LLM_Sync_Win.ps1 -Action restore -WhatIf
+```
+
+**Linux backup preview only:**
+
+```bash
+./backup/LLM_Sync_Linux.sh backup --dry-run
+```
+
+**macOS restore preview only:**
+
+```bash
+./backup/LLM_Sync_Mac.sh restore --dry-run
+```
+
+**Backup layout:**
+
+```text
+<BaseBackupPath>/
+  <machine-name>/
+    codex/
+    gemini/
+    claude/
+    shared-skills/
 ```
 
 ## Prerequisites
