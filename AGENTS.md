@@ -9,7 +9,6 @@ This is a personal scripts collection containing PowerShell (.ps1), shell (.sh),
 - **`backup/`** - IDE configuration sync and Plex backup
 - **`system/`** - Package management, DNS updates, system maintenance
 - **`media/`** - Video conversion and media downloading
-- **`finance_tools/`** - Portfolio sync and financial reporting
 
 ## Important Files
 
@@ -42,26 +41,27 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 
 ### Key Scripts
 
-- **`system/Update-AllPackages_Win.ps1`** - Windows package update script, creates timestamped `.log` files
-- **`system/Update-AllPackages_Linux.sh`** - Linux (Ubuntu) package update script
-- **`system/Update-AllPackages_Mac.sh`** - macOS package update script
-- **`system/Setup-PackageUpdateTasks.ps1`** - Windows Task Scheduler setup and cleanup for package updates
-- **`system/Setup-PackageUpdateTasks_Linux.sh`** - Linux cron setup and cleanup for package updates
-- **`system/Setup-PackageUpdateTasks_Mac.sh`** - macOS launchd setup and cleanup for package updates
-- **`system/Update-CloudflareDNS.ps1`** - Makes external API calls to Cloudflare
+- **`system/windows/Update-AllPackages_Win.ps1`** - Windows package update script, creates timestamped `.log` files
+- **`system/linux/Update-AllPackages_Linux.sh`** - Linux (Ubuntu) package update script
+- **`system/macos/Update-AllPackages_Mac.sh`** - macOS package update script
+- **`system/windows/Setup-PackageUpdateTasks.ps1`** - Windows Task Scheduler setup and cleanup for package updates
+- **`system/linux/Setup-PackageUpdateTasks_Linux.sh`** - Linux cron setup and cleanup for package updates
+- **`system/macos/Setup-PackageUpdateTasks_Mac.sh`** - macOS launchd setup and cleanup for package updates
+- **`system/windows/Update-CloudflareDNS.ps1`** - Makes external API calls to Cloudflare
+- **`system/macos/audit_apps.sh`** - Audits installed Mac GUI apps
+- **`system/macos/sync_apps.sh`** - Syncs Mac apps between machines
 - **`backup/plex_backup.ps1`** - Requires admin privileges, stops Plex services during backup
 - **`backup/Antigravity_Sync_*`** - Cross-platform sync suite (Win/Mac/Linux) with versioning, safety backups, and extension reconciliation
 - **`backup/LLM_Sync_*`** - Cross-platform sync suite (Win/Mac/Linux) for portable Codex, Gemini, Claude, and shared `.skills` settings
-- **`finance_tools/schwab_sync.py`** - Portfolio sync with Seeking Alpha; supports email reports and history tracking
 
 ## Coding Guidelines
 
 ### Common Patterns across Sync Scripts
 
-1. **Pre-restore Safety**: Always implement a "safety backup" of current local settings before performing a restoration. Store these in a non-Git tracked directory (default: `/tmp` or `D:\tmp`) and keep only the latest 2 versions.
+1. **Pre-restore Safety**: Always implement a "safety backup" of current local settings before performing a restoration. Store these in a non-Git tracked directory (default: `/tmp" or "D:\tmp`) and keep only the latest 2 versions.
 2. **Whitelist Synch**: Use a whitelist approach for IDE configuration (especially `.gemini`). Only sync known configuration files (JSON, PB, TXT) and specific user folders (`knowledge`, `scratch`). Explicitly exclude transient/large data like browser profiles and machine-specific AI indices.
 3. **Interactive Menus**: Use arrow-key navigable menus for action selection and backup choice.
-3. **CLI Verification**: Check for the presence of required CLIs (like `antigravity`) before execution.
+4. **CLI Verification**: Check for the presence of required CLIs (like `antigravity`, `mas`) before execution.
 4. **Versioning & Pruning**: Support timestamped folder creation (e.g., `-v` flag) paired with a 30-day auto-pruning logic for maintenance.
 5. **Diff Preview**: Offer users a logic-based comparison (diff) of settings files before overwriting local data.
 
@@ -139,24 +139,27 @@ git config commit.gpgsign true
 │   └── plex_backup.ps1               # Plex Media Server backup
 │
 ├── system/                            # System Maintenance
-│   ├── Update-AllPackages_Win.ps1     # Windows package updater
-│   ├── Update-AllPackages_Linux.sh    # Linux package updater
-│   ├── Update-AllPackages_Mac.sh      # macOS package updater
-│   ├── Setup-PackageUpdateTasks.ps1   # Windows Task Scheduler setup
-│   ├── Setup-PackageUpdateTasks_Linux.sh # Linux cron setup
-│   ├── Setup-PackageUpdateTasks_Mac.sh # macOS launchd setup
-│   ├── Update-CloudflareDNS.ps1       # Dynamic DNS
-│   ├── clean_plex.ps1                # Plex cleanup
-│   ├── list_apps.ps1                 # List installed apps
-│   └── restart_camera_hub.ps1        # Restart Elgato Camera Hub
+│   ├── README.md                      # Overview of system scripts
+│   ├── macos/                         # macOS scripts
+│   │   ├── audit_apps.sh              # List GUI apps and sources
+│   │   ├── sync_apps.sh               # Install missing apps from audit
+│   │   ├── Update-AllPackages_Mac.sh  # macOS package updater
+│   │   └── Setup-PackageUpdateTasks_Mac.sh # macOS launchd setup
+│   ├── windows/                       # Windows scripts
+│   │   ├── Update-AllPackages_Win.ps1 # Windows package updater
+│   │   ├── Setup-PackageUpdateTasks.ps1 # Windows Task Scheduler setup
+│   │   ├── Update-CloudflareDNS.ps1    # Dynamic DNS
+│   │   ├── clean_plex.ps1             # Plex cleanup
+│   │   ├── list_apps.ps1              # List installed apps
+│   │   └── restart_camera_hub.ps1     # Restart Elgato Camera Hub
+│   └── linux/                         # Linux scripts
+│       ├── Update-AllPackages_Linux.sh # Linux package updater
+│       └── Setup-PackageUpdateTasks_Linux.sh # Linux cron setup
 │
 ├── media/                             # Media Processing
 │   ├── Convert-Mp4ToIg.ps1           # Instagram video converter
 │   ├── instagram.ps1                 # Instagram re-encoder
 │   └── download.ps1                  # YouTube/SoundCloud downloader
-│
-└── finance_tools/                     # Finance
-    └── schwab_sync.py                # Schwab portfolio sync with Seeking Alpha
 ```
 
 ## Testing Notes
@@ -164,4 +167,3 @@ git config commit.gpgsign true
 - `backup/plex_backup.ps1` requires Plex to be installed and admin rights
 - `system/Update-CloudflareDNS.ps1` makes live API calls; test with caution
 - Media scripts require FFmpeg, yt-dlp, and scdl installed
-- `finance_tools/schwab_sync.py` calls Seeking Alpha API and can send emails; test with `--dry-run` or limited scope

@@ -11,10 +11,14 @@
 # ============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOG_DIR="$(dirname "$SCRIPT_DIR")/logs"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}" .sh)"
 MACHINE_NAME="$(hostname)"
-TIMESTAMP="$(date +%Y-%m-%d_%H-%M)"
-LOG_FILE="${SCRIPT_DIR}/${SCRIPT_NAME}_${MACHINE_NAME}_${TIMESTAMP}.log"
+TIMESTAMP="$(date +%Y-%m-%d_%H-%m)"
+LOG_FILE="${LOG_DIR}/${SCRIPT_NAME}_${MACHINE_NAME}_${TIMESTAMP}.log"
+
+# Ensure log directory exists
+mkdir -p "$LOG_DIR"
 
 # Status tracking
 APT_STATUS="Skipped"
@@ -295,7 +299,7 @@ show_summary() {
 
 cleanup_logs() {
     log "Info" "Cleaning up old log files (keeping most recent 3)..."
-    ls -t "${SCRIPT_DIR}/${SCRIPT_NAME}_${MACHINE_NAME}_"*.log 2>/dev/null | tail -n +4 | xargs -r rm -f
+    ls -t "${LOG_DIR}/${SCRIPT_NAME}_${MACHINE_NAME}_"*.log 2>/dev/null | tail -n +4 | xargs -r rm -f
 }
 
 # ============================================================================

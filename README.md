@@ -51,30 +51,40 @@ LLM Sync scripts provide a separate cross-platform backup and restore flow for a
 
 ### System Maintenance
 
+The `system/` directory is organized by platform: `macos/`, `windows/`, and `linux/`.
+
+#### macOS (`system/macos/`)
+
 | Script | Description |
 |--------|-------------|
-| [`Update-AllPackages_Win.ps1`](system/Update-AllPackages_Win.ps1) | Weekly update script for winget, Chocolatey, and npm packages (Windows). |
-| [`Update-AllPackages_Linux.sh`](system/Update-AllPackages_Linux.sh) | Linux (Ubuntu) package updater (apt, snap, flatpak, npm, pip, rustup). |
-| [`Update-AllPackages_Mac.sh`](system/Update-AllPackages_Mac.sh) | macOS package updater (brew, mas, npm, pip, rustup). |
-| [`Setup-PackageUpdateTasks.ps1`](system/Setup-PackageUpdateTasks.ps1) | Sets up a Windows Task Scheduler task to run `Update-AllPackages_Win.ps1` weekly. |
-| [`Setup-PackageUpdateTasks_Linux.sh`](system/Setup-PackageUpdateTasks_Linux.sh) | Installs or removes the Linux weekly cron schedule and cleans up legacy crontab entries. |
-| [`Setup-PackageUpdateTasks_Mac.sh`](system/Setup-PackageUpdateTasks_Mac.sh) | Installs or removes the macOS weekly launchd job for package updates. |
-| [`Update-CloudflareDNS.ps1`](system/Update-CloudflareDNS.ps1) | Dynamic DNS updater for Cloudflare. Updates a DNS record with your current public IP address. |
-| [`clean_plex.ps1`](system/clean_plex.ps1) | Cleans up orphaned data, caches, logs, and temporary files in Plex Media Server. Triggers Plex's internal cleanup tasks via API. |
-| [`list_apps.ps1`](system/list_apps.ps1) | Lists installed applications from multiple sources: Registry, Microsoft Store, Winget, Chocolatey, Scoop, and npm. |
-| [`restart_camera_hub.ps1`](system/restart_camera_hub.ps1) | Restarts the Elgato Camera Hub application. |
+| [`audit_apps.sh`](system/macos/audit_apps.sh) | Audits installed GUI applications and identifies their source (Homebrew, App Store, or Manual). |
+| [`sync_apps.sh`](system/macos/sync_apps.sh) | Compares an audit file with local state and installs missing managed apps. |
+| [`Update-AllPackages_Mac.sh`](system/macos/Update-AllPackages_Mac.sh) | Weekly package updater (brew, mas, npm, pip, rustup). |
+| [`Setup-PackageUpdateTasks_Mac.sh`](system/macos/Setup-PackageUpdateTasks_Mac.sh) | Installs/removes the macOS weekly launchd job for updates. |
+
+#### Windows (`system/windows/`)
+
+| Script | Description |
+|--------|-------------|
+| [`Update-AllPackages_Win.ps1`](system/windows/Update-AllPackages_Win.ps1) | Weekly update script for winget, Chocolatey, and npm packages. |
+| [`Setup-PackageUpdateTasks.ps1`](system/windows/Setup-PackageUpdateTasks.ps1) | Sets up a Windows Task Scheduler task for weekly updates. |
+| [`list_apps.ps1`](system/windows/list_apps.ps1) | Lists installed applications from multiple sources (Registry, Store, Winget, etc.). |
+| [`Update-CloudflareDNS.ps1`](system/windows/Update-CloudflareDNS.ps1) | Dynamic DNS updater for Cloudflare. |
+| [`clean_plex.ps1`](system/windows/clean_plex.ps1) | Cleans up orphaned data and caches in Plex Media Server. |
+| [`restart_camera_hub.ps1`](system/windows/restart_camera_hub.ps1) | Restarts the Elgato Camera Hub application. |
+
+#### Linux (`system/linux/`)
+
+| Script | Description |
+|--------|-------------|
+| [`Update-AllPackages_Linux.sh`](system/linux/Update-AllPackages_Linux.sh) | Linux (Ubuntu) package updater (apt, snap, flatpak, npm, pip, rustup). |
+| [`Setup-PackageUpdateTasks_Linux.sh`](system/linux/Setup-PackageUpdateTasks_Linux.sh) | Installs/removes the Linux weekly cron schedule. |
 
 Package updater scripts no longer schedule themselves when you run them manually. Use the platform-specific setup script to install or remove the weekly schedule:
 
-- Windows: `system/Setup-PackageUpdateTasks.ps1`
-- Linux: `system/Setup-PackageUpdateTasks_Linux.sh`
-- macOS: `system/Setup-PackageUpdateTasks_Mac.sh`
-
-### Finance Tools
-
-| Script | Description |
-|--------|-------------|
-| [`schwab_sync.py`](finance_tools/schwab_sync.py) | Synchronizes Schwab portfolio exports with Seeking Alpha and fetches recent news. Supports email reports and history tracking. |
+- Windows: `system/windows/Setup-PackageUpdateTasks.ps1`
+- Linux: `system/linux/Setup-PackageUpdateTasks_Linux.sh`
+- macOS: `system/macos/Setup-PackageUpdateTasks_Mac.sh`
 
 ### Media Processing
 
@@ -83,20 +93,6 @@ Package updater scripts no longer schedule themselves when you run them manually
 | [`Convert-Mp4ToIg.ps1`](media/Convert-Mp4ToIg.ps1) | Batch converts MP4 files for Instagram (1080x1350 portrait format) using FFmpeg. |
 | [`instagram.ps1`](media/instagram.ps1) | Re-encodes videos for Instagram in a directory using FFmpeg. |
 | [`download.ps1`](media/download.ps1) | Downloads media from YouTube or SoundCloud using yt-dlp and scdl. |
-
-### Finance Tools
-
-| Script | Description |
-|--------|-------------|
-| [`schwab_sync.py`](finance_tools/schwab_sync.py) | Synchronizes Schwab portfolio exports with Seeking Alpha and fetches recent news. Supports email reports and history tracking. |
-
-### Media Processing
-
-| Script | Description |
-|--------|-------------|
-| [`Convert-Mp4ToIg.ps1`](Convert-Mp4ToIg.ps1) | Batch converts MP4 files for Instagram (1080x1350 portrait format) using FFmpeg. |
-| [`instagram.ps1`](instagram.ps1) | Re-encodes videos for Instagram in a directory using FFmpeg. |
-| [`download.ps1`](download.ps1) | Downloads media from YouTube or SoundCloud using yt-dlp and scdl. |
 
 ## Configuration
 

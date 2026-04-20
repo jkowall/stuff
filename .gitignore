@@ -14,10 +14,8 @@ plex_backup.json
 .DS_Store
 cookies.txt
 
-# Finance Tools
-finance_tools/*.csv
-!finance_tools/test_schwab_export.csv
-!finance_tools/seeking_alpha_import.csv
-finance_tools/*.html
-finance_tools/news_history.json
-finance_tools/config.json
+# Audit and Local Data
+system/macos/mac_apps_audit.json
+system/logs/
+system/macos/*.json
+system/macos/*.log

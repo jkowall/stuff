@@ -28,10 +28,13 @@ param(
 $IsAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 $ScriptDir = $PSScriptRoot
+$LogDir = Join-Path (Split-Path $ScriptDir -Parent) "logs"
+if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
+
 $ScriptName = [System.IO.Path]::GetFileNameWithoutExtension($PSCommandPath)
 $MachineName = $env:COMPUTERNAME
 $Timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm"
-$LogFile = Join-Path $ScriptDir "${ScriptName}_${MachineName}_$Timestamp.log"
+$LogFile = Join-Path $LogDir "${ScriptName}_${MachineName}_$Timestamp.log"
 
 # Track results for summary
 $Results = @{
@@ -497,7 +500,7 @@ if (Test-DataSaver) {
 }
 
 # Clean up old log files (keep only 3 most recent)
-$LogPattern = Join-Path $ScriptDir "${ScriptName}_*.log"
+$LogPattern = Join-Path $LogDir "${ScriptName}_*.log"
 $OldLogs = Get-ChildItem -Path $LogPattern -ErrorAction SilentlyContinue | 
 Sort-Object LastWriteTime -Descending | 
 Select-Object -Skip 3
