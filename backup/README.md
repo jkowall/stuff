@@ -105,6 +105,7 @@ This keeps the LLM sync suite focused on portable Gemini config while avoiding n
 ./LLM_Sync_Linux.sh migrate-skills --dry-run
 ./LLM_Sync_Linux.sh migrate-skills --conflict-policy=prefer-shared
 ./LLM_Sync_Linux.sh backup
+./LLM_Sync_Linux.sh backup --machine-name=JKWORK
 ./LLM_Sync_Linux.sh restore --dry-run
 ```
 
@@ -115,8 +116,11 @@ This keeps the LLM sync suite focused on portable Gemini config while avoiding n
 ./LLM_Sync_Mac.sh migrate-skills --dry-run
 ./LLM_Sync_Mac.sh migrate-skills --conflict-policy=prefer-local
 ./LLM_Sync_Mac.sh backup
+./LLM_Sync_Mac.sh backup --machine-name=JKWORK
 ./LLM_Sync_Mac.sh restore --dry-run
 ```
+
+On macOS and Linux, the default machine folder now uses the short host name with any domain suffix removed, so `JKWORK.local` becomes `JKWORK`. Use `--machine-name=<name>` to override it explicitly.
 
 ## Config Files
 
