@@ -10,13 +10,28 @@ fi
 
 BASE_BACKUP_DIR=$(python3 -c "import json, os; print(os.path.expanduser(json.load(open('$CONFIG_FILE'))['DefaultBackupPath']))")
 PRE_RESTORE_BASE=$(python3 -c "import json, os; config = json.load(open('$CONFIG_FILE')); print(os.path.expanduser(config.get('PreRestorePath', '/tmp')))")
-HOSTNAME=$(hostname)
-BACKUP_DIR_DEFAULT="$BASE_BACKUP_DIR/$HOSTNAME"
+resolve_machine_name() {
+    local explicit_name=$1
+    if [[ -n "$explicit_name" ]]; then
+        print -r -- "$explicit_name"
+        return 0
+    fi
+
+    local raw_name
+    raw_name=$(scutil --get LocalHostName 2>/dev/null)
+    if [[ -z "$raw_name" ]]; then
+        raw_name=$(hostname)
+    fi
+
+    # Avoid using Bonjour/domain suffixes like ".local" in backup folder names.
+    print -r -- "${raw_name%%.*}"
+}
 
 VERSIONED=false
 DRY_RUN=false
 CONFLICT_POLICY="interactive"
 ACTION=""
+MACHINE_NAME=""
 for arg in "$@"; do
     case "$arg" in
         backup|restore|audit|migrate-skills)
@@ -31,14 +46,20 @@ for arg in "$@"; do
         --conflict-policy=*)
             CONFLICT_POLICY="${arg#*=}"
             ;;
+        --machine-name=*)
+            MACHINE_NAME="${arg#*=}"
+            ;;
     esac
 done
+
+HOSTNAME=$(resolve_machine_name "$MACHINE_NAME")
+BACKUP_DIR_DEFAULT="$BASE_BACKUP_DIR/$HOSTNAME"
 
 run_cmd() {
     if [[ "$DRY_RUN" == "true" ]]; then
         echo "[dry-run] $*"
     else
-        "$@"
+        command "$@"
     fi
 }
 

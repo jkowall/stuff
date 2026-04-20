@@ -183,11 +183,25 @@ Scripts that require personal configuration now use external JSON config files s
 ./backup/LLM_Sync_Linux.sh backup --dry-run
 ```
 
+**Linux backup with explicit machine name:**
+
+```bash
+./backup/LLM_Sync_Linux.sh backup --machine-name=JKWORK
+```
+
 **macOS restore preview only:**
 
 ```bash
 ./backup/LLM_Sync_Mac.sh restore --dry-run
 ```
+
+**macOS backup with normalized machine name:**
+
+```bash
+./backup/LLM_Sync_Mac.sh backup
+```
+
+On macOS and Linux, the backup folder now defaults to the short host name without any domain suffix, so a host like `JKWORK.local` backs up under `JKWORK`. You can override that with `--machine-name=<name>`.
 
 **Backup layout:**
 
