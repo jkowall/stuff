@@ -4,6 +4,7 @@
 .DESCRIPTION
     Creates a scheduled task to run Update-AllPackages_Win.ps1 every Saturday at 1:00 AM.
     Can also be used to update or remove scheduled tasks and clean up legacy entries.
+    The update script covers winget, Windows Store, Chocolatey, npm, WSL apt, and pip.
 .PARAMETER Remove
     Remove the scheduled task instead of creating it.
 .PARAMETER InstallBurntToast
@@ -65,21 +66,21 @@ function Write-Status {
         [ValidateSet("Info", "Success", "Warning", "Error")]
         [string]$Level = "Info"
     )
-    
+
     $Color = switch ($Level) {
         "Info" { "Cyan" }
         "Success" { "Green" }
         "Warning" { "Yellow" }
         "Error" { "Red" }
     }
-    
+
     $Icon = switch ($Level) {
         "Info" { "[*]" }
         "Success" { "[+]" }
         "Warning" { "[!]" }
         "Error" { "[X]" }
     }
-    
+
     Write-Host "$Icon $Message" -ForegroundColor $Color
 }
 
@@ -89,7 +90,7 @@ function Write-Status {
 
 if ($InstallBurntToast) {
     Write-Status "Installing BurntToast module for toast notifications..." -Level Info
-    
+
     try {
         if (Get-Module -ListAvailable -Name BurntToast) {
             Write-Status "BurntToast is already installed" -Level Success
@@ -117,7 +118,7 @@ if ($Remove) {
     catch {
         Write-Status "Failed to remove scheduled task: $($_.Exception.Message)" -Level Error
     }
-    
+
     exit
 }
 
@@ -137,19 +138,19 @@ if (-not (Test-Path $UpdateScript)) {
 
 try {
     Remove-PackageUpdateTasks -SilentIfMissing
-    
+
     # Create the action - run PowerShell with the script
     $Action = New-ScheduledTaskAction `
         -Execute "powershell.exe" `
         -Argument "-ExecutionPolicy Bypass -NoExit -File `"$UpdateScript`"" `
         -WorkingDirectory $ScriptDir
-    
+
     # Create the trigger - every Saturday at 1:00 AM
     $Trigger = New-ScheduledTaskTrigger `
         -Weekly `
         -DaysOfWeek Saturday `
         -At "1:00AM"
-    
+
     # Create settings
     $Settings = New-ScheduledTaskSettingsSet `
         -AllowStartIfOnBatteries `
@@ -157,13 +158,13 @@ try {
         -StartWhenAvailable `
         -RunOnlyIfNetworkAvailable `
         -WakeToRun:$false
-    
+
     # Create principal - run as current user, interactive (so you can see the window)
     $Principal = New-ScheduledTaskPrincipal `
         -UserId $env:USERNAME `
         -LogonType Interactive `
         -RunLevel Limited
-    
+
     # Register the task
     Register-ScheduledTask `
         -TaskName $TaskName `
@@ -171,8 +172,8 @@ try {
         -Trigger $Trigger `
         -Settings $Settings `
         -Principal $Principal `
-        -Description "Weekly update of winget, Chocolatey, and npm packages. Runs every Saturday at 1:00 AM."
-    
+        -Description "Weekly update of winget, Windows Store, Chocolatey, npm, WSL apt, and pip packages. Runs every Saturday at 1:00 AM."
+
     Write-Status "Scheduled task created successfully!" -Level Success
     Write-Status "" -Level Info
     Write-Status "Task Details:" -Level Info
@@ -185,7 +186,7 @@ try {
     Write-Status "" -Level Info
     Write-Status "To remove this scheduled task, run:" -Level Info
     Write-Host "  .\Setup-PackageUpdateTasks.ps1 -Remove" -ForegroundColor White
-    
+
 }
 catch {
     Write-Status "Failed to create scheduled task: $($_.Exception.Message)" -Level Error

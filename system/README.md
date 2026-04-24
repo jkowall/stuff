@@ -21,7 +21,7 @@ This directory contains system automation and maintenance scripts, organized by 
 
 | Script | Description |
 |--------|-------------|
-| `Update-AllPackages_Win.ps1` | Weekly updater for winget, Chocolatey, and npm. |
+| `Update-AllPackages_Win.ps1` | Weekly updater for winget, Windows Store, Chocolatey, npm, WSL apt, and pip. |
 | `Setup-PackageUpdateTasks.ps1` | Sets up a Windows Task Scheduler task for weekly updates. |
 | `list_apps.ps1` | Lists installed apps from Registry, Store, Winget, Choco, Scoop, and npm. |
 | `Update-CloudflareDNS.ps1` | Dynamic DNS updater for Cloudflare. |

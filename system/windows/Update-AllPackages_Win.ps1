@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    Weekly package update script for winget, Chocolatey, npm, WSL apt, and pip.
+    Weekly package update script for winget, Windows Store, Chocolatey, npm, WSL apt, and pip.
 .DESCRIPTION
-    Updates all packages from winget, Chocolatey, npm global packages,
-    WSL Ubuntu (apt), and pip global packages.
+    Updates all packages from winget, Windows Store, Chocolatey,
+    npm global packages, WSL Ubuntu (apt), and pip global packages.
     Logs all output to a timestamped file and shows toast notifications.
 .NOTES
     Author: Auto-generated
@@ -15,6 +15,7 @@ param(
     [switch]$SkipAdminChocolatey,
     [switch]$SkipUserChocolatey,
     [switch]$SkipWinget,
+    [switch]$SkipWindowsStore,
     [switch]$SkipNpm,
     [switch]$SkipWsl,
     [switch]$SkipPip,
@@ -39,6 +40,7 @@ $LogFile = Join-Path $LogDir "${ScriptName}_${MachineName}_$Timestamp.log"
 # Track results for summary
 $Results = @{
     Winget          = @{ Status = "Skipped"; Message = "" }
+    WindowsStore    = @{ Status = "Skipped"; Message = "" }
     ChocolateyAdmin = @{ Status = "Skipped"; Message = "" }
     ChocolateyUser  = @{ Status = "Skipped"; Message = "" }
     Npm             = @{ Status = "Skipped"; Message = "" }
@@ -56,10 +58,10 @@ function Write-Log {
         [ValidateSet("Info", "Success", "Warning", "Error")]
         [string]$Level = "Info"
     )
-    
+
     $Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $LogEntry = "[$Timestamp] [$Level] $Message"
-    
+
     # Write to console with color
     $Color = switch ($Level) {
         "Info" { "White" }
@@ -67,10 +69,10 @@ function Write-Log {
         "Warning" { "Yellow" }
         "Error" { "Red" }
     }
-    
+
     # Use Write-Host for console output. Transcript will capture this too.
     Write-Host $LogEntry -ForegroundColor $Color
-    
+
     # If transcript is not running, append to file manually as a backup
     if (-not $script:TranscriptActive) {
         try {
@@ -108,7 +110,7 @@ function Show-ToastNotification {
         [ValidateSet("Info", "Warning", "Error")]
         [string]$Type = "Info"
     )
-    
+
     try {
         # Try BurntToast first (nicer notifications)
         if (Get-Module -ListAvailable -Name BurntToast) {
@@ -125,12 +127,12 @@ function Show-ToastNotification {
     catch {
         # Fall through to native method
     }
-    
+
     # Fallback to native Windows toast
     try {
         [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
         [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
-        
+
         $Template = @"
 <toast>
     <visual>
@@ -165,30 +167,48 @@ function Show-ToastNotification {
     }
 }
 
+function Get-WingetCommand {
+    $WingetCommand = Get-Command winget.exe -ErrorAction SilentlyContinue
+    if (-not $WingetCommand) {
+        $WingetCommand = Get-Command winget -ErrorAction Stop
+    }
+
+    return $WingetCommand
+}
+
+function Get-NpmCommand {
+    $NpmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if (-not $NpmCommand) {
+        $NpmCommand = Get-Command npm -ErrorAction Stop
+    }
+
+    return $NpmCommand
+}
+
 function Update-Winget {
     Write-Log "=" * 60 -Level Info
     Write-Log "STARTING WINGET UPDATES" -Level Info
     Write-Log "=" * 60 -Level Info
-    
+
     try {
         # Check if winget is available
-        $WingetPath = Get-Command winget -ErrorAction Stop
+        $WingetPath = Get-WingetCommand
         Write-Log "Found winget at: $($WingetPath.Source)" -Level Info
-        
+
         # Pin packages with broken version detection so they don't re-upgrade every run
         $WingetPins = @("Syncthing.Syncthing")
         foreach ($Pin in $WingetPins) {
-            & winget pin list | Select-String -Quiet $Pin
+            & $WingetPath.Source pin list | Select-String -Quiet $Pin
             if (-not $?) {
                 Write-Log "Pinning $Pin (broken version detection)" -Level Info
-                & winget pin add $Pin --blocking 2>&1 | Out-Null
+                & $WingetPath.Source pin add $Pin --blocking 2>&1 | Out-Null
             }
         }
 
         # Run winget upgrade directly to preserve progress bars
-        Write-Log "Running: winget upgrade --all --include-unknown --accept-package-agreements --accept-source-agreements" -Level Info
+        Write-Log "Running: winget upgrade --all --source winget --include-unknown --accept-package-agreements --accept-source-agreements" -Level Info
 
-        & winget upgrade --all --include-unknown --accept-package-agreements --accept-source-agreements
+        & $WingetPath.Source upgrade --all --source winget --include-unknown --accept-package-agreements --accept-source-agreements
 
         if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) {
             $script:Results.Winget.Status = "Success"
@@ -204,7 +224,7 @@ function Update-Winget {
         # Explicitly upgrade PowerShell — winget upgrade --all often skips it
         # due to MSI installer detection issues
         Write-Log "Ensuring PowerShell 7+ is up to date..." -Level Info
-        & winget upgrade Microsoft.PowerShell --accept-package-agreements --accept-source-agreements
+        & $WingetPath.Source upgrade Microsoft.PowerShell --source winget --accept-package-agreements --accept-source-agreements
         if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) {
             Write-Log "PowerShell upgrade check completed" -Level Success
         }
@@ -220,18 +240,50 @@ function Update-Winget {
     }
 }
 
+function Update-WindowsStore {
+    Write-Log "=" * 60 -Level Info
+    Write-Log "STARTING WINDOWS STORE UPDATES" -Level Info
+    Write-Log "=" * 60 -Level Info
+
+    try {
+        $WingetPath = Get-WingetCommand
+        Write-Log "Found winget at: $($WingetPath.Source)" -Level Info
+
+        Write-Log "Running: winget upgrade --all --source msstore --include-unknown --accept-package-agreements --accept-source-agreements" -Level Info
+
+        & $WingetPath.Source upgrade --all --source msstore --include-unknown --accept-package-agreements --accept-source-agreements
+
+        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) {
+            $script:Results.WindowsStore.Status = "Success"
+            $script:Results.WindowsStore.Message = "Windows Store packages updated successfully"
+            Write-Log "Windows Store updates completed successfully" -Level Success
+        }
+        else {
+            $script:Results.WindowsStore.Status = "Warning"
+            $script:Results.WindowsStore.Message = "Windows Store updates completed with exit code: $LASTEXITCODE"
+            Write-Log "Windows Store updates completed with exit code: $LASTEXITCODE" -Level Warning
+        }
+    }
+    catch {
+        $script:Results.WindowsStore.Status = "Error"
+        $script:Results.WindowsStore.Message = $_.Exception.Message
+        Write-Log "Windows Store update failed: $($_.Exception.Message)" -Level Error
+        Show-ToastNotification -Title "Windows Store Update Failed" -Message $_.Exception.Message -Type Error
+    }
+}
+
 function Update-Chocolatey {
     Write-Log "=" * 60 -Level Info
     Write-Log "STARTING CHOCOLATEY UPDATES" -Level Info
     Write-Log "=" * 60 -Level Info
-    
+
     try {
         # Check if choco is available
         $ChocoPath = Get-Command choco -ErrorAction Stop
         Write-Log "Found Chocolatey at: $($ChocoPath.Source)" -Level Info
-        
+
         # Chocolatey admin upgrade
-        
+
         if ($IsAdmin) {
             Write-Log "Running choco upgrade..." -Level Info
             & choco upgrade all -y
@@ -240,7 +292,7 @@ function Update-Chocolatey {
             Write-Log "ERROR: Update-ChocolateyAdmin called without Administrator privileges." -Level Error
             throw "Elevation required for Chocolatey admin updates."
         }
-        
+
         $script:Results.ChocolateyAdmin.Status = "Success"
         $script:Results.ChocolateyAdmin.Message = "Chocolatey packages updated successfully"
         Write-Log "Chocolatey updates completed successfully" -Level Success
@@ -370,43 +422,46 @@ function Update-NpmGlobal {
     Write-Log "=" * 60 -Level Info
     Write-Log "STARTING NPM GLOBAL UPDATES" -Level Info
     Write-Log "=" * 60 -Level Info
-    
+
     try {
         # Check if npm is available
-        $NpmPath = Get-Command npm -ErrorAction Stop
+        $NpmPath = Get-NpmCommand
         Write-Log "Found npm at: $($NpmPath.Source)" -Level Info
-        
+
         Write-Log "Checking for outdated global packages..." -Level Info
-        $OutdatedText = & npm outdated -g --parseable 2>&1
-        
+        $OutdatedText = & $NpmPath.Source outdated -g --json 2>&1 | Out-String
+        $OutdatedExitCode = $LASTEXITCODE
+
+        if ($OutdatedExitCode -gt 1) {
+            throw "npm outdated failed with exit code $OutdatedExitCode. Output: $($OutdatedText.Trim())"
+        }
+
         $PackagesToUpdate = @()
+        $OutdatedText = $OutdatedText.Trim()
         if ($OutdatedText) {
-            foreach ($Line in $OutdatedText) {
-                $LineStr = [string]$Line
-                if ($LineStr -match "npm ERR!" -or $LineStr -match "npm WARN") { continue }
-                $Parts = $LineStr -split ":"
-                if ($Parts.Length -ge 4) {
-                    $PackageLatest = $Parts[-3]
-                    if ($PackageLatest -match "@") {
-                        $PackagesToUpdate += $PackageLatest
-                    }
-                }
+            $OutdatedPackages = $OutdatedText | ConvertFrom-Json
+            foreach ($Property in $OutdatedPackages.PSObject.Properties) {
+                $PackageName = $Property.Name
+                $PackageInfo = $Property.Value
+                $TargetVersion = if ($PackageInfo.latest) { $PackageInfo.latest } else { "latest" }
+                $PackagesToUpdate += "$PackageName@$TargetVersion"
+                Write-Log "  ${PackageName}: $($PackageInfo.current) -> $TargetVersion" -Level Info
             }
         }
-        
+
         if ($PackagesToUpdate.Count -gt 0) {
             $PackageList = $PackagesToUpdate -join " "
             Write-Log "Updating packages: $PackageList" -Level Info
-            
-            & npm install -g $PackagesToUpdate
-                
+
+            & $NpmPath.Source install -g $PackagesToUpdate
+
             if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) {
                 $script:Results.Npm.Status = "Warning"
                 $script:Results.Npm.Message = "npm completed with exit code: $LASTEXITCODE"
                 Write-Log "npm completed with exit code: $LASTEXITCODE" -Level Warning
                 return
             }
-            
+
             $script:Results.Npm.Status = "Success"
             $script:Results.Npm.Message = "npm global packages updated successfully"
             Write-Log "npm global updates completed successfully" -Level Success
@@ -430,9 +485,9 @@ function Show-Summary {
     Write-Log "=" * 60 -Level Info
     Write-Log "UPDATE SUMMARY" -Level Info
     Write-Log "=" * 60 -Level Info
-    
+
     $HasErrors = $false
-    
+
     foreach ($Key in $Results.Keys) {
         $Result = $Results[$Key]
         $StatusIcon = switch ($Result.Status) {
@@ -447,17 +502,17 @@ function Show-Summary {
             "Error" { "Error" }
             "Skipped" { "Info" }
         }
-        
+
         Write-Log "$StatusIcon $Key : $($Result.Status) - $($Result.Message)" -Level $Level
-        
+
         if ($Result.Status -eq "Error") {
             $HasErrors = $true
         }
     }
-    
+
     Write-Log "=" * 60 -Level Info
     Write-Log "Log file saved to: $LogFile" -Level Info
-    
+
     # Final notification
     if ($HasErrors) {
         Show-ToastNotification -Title "Package Updates Completed with Errors" -Message "Check the log for details: $LogFile" -Type Warning
@@ -501,8 +556,8 @@ if (Test-DataSaver) {
 
 # Clean up old log files (keep only 3 most recent)
 $LogPattern = Join-Path $LogDir "${ScriptName}_*.log"
-$OldLogs = Get-ChildItem -Path $LogPattern -ErrorAction SilentlyContinue | 
-Sort-Object LastWriteTime -Descending | 
+$OldLogs = Get-ChildItem -Path $LogPattern -ErrorAction SilentlyContinue |
+Sort-Object LastWriteTime -Descending |
 Select-Object -Skip 3
 if ($OldLogs) {
     Write-Log "Cleaning up $($OldLogs.Count) old log file(s)..." -Level Info
@@ -513,37 +568,43 @@ if ($OldLogs) {
 }
 
 # Show start notification
-Show-ToastNotification -Title "Package Updates Starting" -Message "Updating winget, Chocolatey, npm, WSL apt, and pip packages..." -Type Info
+Show-ToastNotification -Title "Package Updates Starting" -Message "Updating winget, Windows Store, Chocolatey, npm, WSL apt, and pip packages..." -Type Info
 
 # Handle split execution (User vs Elevated)
 
 if (-not $IsAdmin -and -not $Elevated) {
     # 1. Run Other Non-Admin Tasks (if any)
     # (Currently all tasks are moved to elevated to avoid warnings)
-    
+
     # 2. Check if we need elevation for other tasks
     $NeedsElevation = $false
     if (-not $SkipWinget) { $NeedsElevation = $true }
+    if (-not $SkipWindowsStore) { $NeedsElevation = $true }
     if (-not $SkipAdminChocolatey) { $NeedsElevation = $true }
     if (-not $SkipNpm) {
-        $NpmPath = Get-Command npm -ErrorAction SilentlyContinue
-        if ($NpmPath) {
-            $NpmDir = Split-Path (Split-Path $NpmPath.Source -Parent) -Parent
-            if ($NpmDir -like "*Program Files*") { $NeedsElevation = $true }
+        try {
+            $NpmPath = Get-NpmCommand
+            if ($NpmPath) {
+                $NpmDir = Split-Path (Split-Path $NpmPath.Source -Parent) -Parent
+                if ($NpmDir -like "*Program Files*") { $NeedsElevation = $true }
+            }
+        }
+        catch {
+            Write-Log "npm was not found while checking elevation requirements; skipping npm elevation check." -Level Warning
         }
     }
 
     if ($NeedsElevation) {
         Write-Log "Admin tasks pending. Requesting one-time elevation..." -Level Warning
-        
         $RelaunchArgs = @("-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"", "-Elevated")
         if ($SkipWinget) { $RelaunchArgs += "-SkipWinget" }
+        if ($SkipWindowsStore) { $RelaunchArgs += "-SkipWindowsStore" }
         if ($SkipAdminChocolatey) { $RelaunchArgs += "-SkipAdminChocolatey" }
         if ($SkipNpm) { $RelaunchArgs += "-SkipNpm" }
         if ($SkipWsl) { $RelaunchArgs += "-SkipWsl" }
         if ($SkipPip) { $RelaunchArgs += "-SkipPip" }
         $RelaunchArgs += "-SkipUserChocolatey" # Handled in this process
-        
+
         Start-Process "powershell.exe" -ArgumentList $RelaunchArgs -Verb RunAs -Wait
     }
 }
@@ -553,6 +614,7 @@ elseif ($Elevated -and -not $IsAdmin) {
 else {
     # Running as Admin (or explicitly requested elevated tasks)
     if (-not $SkipWinget) { Update-Winget }
+    if (-not $SkipWindowsStore) { Update-WindowsStore }
     if (-not $SkipAdminChocolatey -or -not $SkipUserChocolatey) { Update-Chocolatey }
     if (-not $SkipNpm) { Update-NpmGlobal }
     if (-not $SkipWsl) { Update-WslPackages }

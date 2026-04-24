@@ -66,7 +66,7 @@ The `system/` directory is organized by platform: `macos/`, `windows/`, and `lin
 
 | Script | Description |
 |--------|-------------|
-| [`Update-AllPackages_Win.ps1`](system/windows/Update-AllPackages_Win.ps1) | Weekly update script for winget, Chocolatey, and npm packages. |
+| [`Update-AllPackages_Win.ps1`](system/windows/Update-AllPackages_Win.ps1) | Weekly update script for winget, Windows Store, Chocolatey, npm, WSL apt, and pip packages. |
 | [`Setup-PackageUpdateTasks.ps1`](system/windows/Setup-PackageUpdateTasks.ps1) | Sets up a Windows Task Scheduler task for weekly updates. |
 | [`list_apps.ps1`](system/windows/list_apps.ps1) | Lists installed applications from multiple sources (Registry, Store, Winget, etc.). |
 | [`Update-CloudflareDNS.ps1`](system/windows/Update-CloudflareDNS.ps1) | Dynamic DNS updater for Cloudflare. |
