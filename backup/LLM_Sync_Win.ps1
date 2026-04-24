@@ -113,12 +113,12 @@ $Script:Assistants = @(
     @{
         Name         = "claude"
         Source       = Join-Path $env:USERPROFILE ".claude"
-        RootFiles    = @("settings.json")
+        RootFiles    = @("settings.json", "statusline-command.sh")
         NestedFiles  = @()
         Directories  = @(
             @{ RelativePath = "skills"; ExcludeNames = @(".git") }
         )
-        PreviewFiles = @("settings.json")
+        PreviewFiles = @("settings.json", "statusline-command.sh")
     }
 )
 

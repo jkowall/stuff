@@ -177,6 +177,7 @@ backup_claude() {
     remove_tree "$root"
     run_cmd mkdir -p "$root"
     copy_file_if_exists "$HOME/.claude" "settings.json" "$root"
+    copy_file_if_exists "$HOME/.claude" "statusline-command.sh" "$root"
     sync_dir_mirror "$HOME/.claude/skills" "$root/skills" ".git/"
 }
 
@@ -352,6 +353,7 @@ preview_restore_diffs() {
     preview_diff_if_changed "$HOME/.gemini/settings.json" "$root/gemini/settings.json" "gemini/settings.json"
     preview_diff_if_changed "$HOME/.gemini/antigravity/mcp_config.json" "$root/gemini/antigravity/mcp_config.json" "gemini/antigravity/mcp_config.json"
     preview_diff_if_changed "$HOME/.claude/settings.json" "$root/claude/settings.json" "claude/settings.json"
+    preview_diff_if_changed "$HOME/.claude/statusline-command.sh" "$root/claude/statusline-command.sh" "claude/statusline-command.sh"
 }
 
 restore_codex() {
@@ -381,6 +383,8 @@ restore_claude() {
     [[ -d "$root" ]] || return 0
     run_cmd mkdir -p "$HOME/.claude"
     copy_file_if_exists "$root" "settings.json" "$HOME/.claude"
+    copy_file_if_exists "$root" "statusline-command.sh" "$HOME/.claude"
+    [[ -f "$HOME/.claude/statusline-command.sh" ]] && run_cmd chmod +x "$HOME/.claude/statusline-command.sh"
     sync_dir_mirror "$root/skills" "$HOME/.claude/skills" ".git/"
 }
 
