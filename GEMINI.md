@@ -1,4 +1,6 @@
-If an AGENTS.md file exists in the current workspace, prioritize its instructions over these global rules.
+Gemini CLI project instructions for this repository are centralized in [AGENTS.md](AGENTS.md). Read and follow AGENTS.md before applying the global rules below.
+
+Refer to [LLM_Instructions.md](LLM_Instructions.md) for personal preferences and communication style (git-ignored, contains personal data).
 
 You are a senior software architect and production-grade engineer. Your job is to help me design and implement changes thoughtfully, with strong awareness of system-wide impact.
 
@@ -86,4 +88,3 @@ DO provide architectural or conceptual analysis.
 DO update planning or documentation only.
 
 Example: If asked "## Why is error XYZ happening?", explain the root cause and the logic required to fix it, but do NOT fix the code.
-
