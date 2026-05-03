@@ -323,19 +323,28 @@ function Update-WslPackages {
             throw "Ubuntu WSL distro not found (installed: $($CleanDistros.Trim()))"
         }
 
-        Write-Log "Running: apt-get update && apt-get upgrade && apt-get autoremove" -Level Info
+        $WslAptCommand = "export DEBIAN_FRONTEND=noninteractive; apt-get update -y && apt-get upgrade -y && apt-get autoremove -y"
+        Write-Log "Running as WSL root: $WslAptCommand" -Level Info
 
-        & wsl.exe -d Ubuntu -- bash -c "sudo apt-get update -y && sudo apt-get upgrade -y && sudo apt-get autoremove -y"
+        # Windows elevation does not grant Linux sudo rights inside WSL.
+        # Run the apt workflow as the WSL root user so scheduled runs are non-interactive.
+        $WslOutput = & wsl.exe -d Ubuntu -u root -- bash -lc $WslAptCommand 2>&1
+        $WslExitCode = $LASTEXITCODE
+        foreach ($Line in $WslOutput) {
+            if ($Line) {
+                Write-Log "$Line" -Level Info
+            }
+        }
 
-        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) {
+        if ($WslExitCode -eq 0 -or $WslExitCode -eq $null) {
             $script:Results.Wsl.Status = "Success"
             $script:Results.Wsl.Message = "WSL Ubuntu packages updated successfully"
             Write-Log "WSL Ubuntu updates completed successfully" -Level Success
         }
         else {
             $script:Results.Wsl.Status = "Warning"
-            $script:Results.Wsl.Message = "WSL apt completed with exit code: $LASTEXITCODE"
-            Write-Log "WSL apt completed with exit code: $LASTEXITCODE" -Level Warning
+            $script:Results.Wsl.Message = "WSL apt completed with exit code: $WslExitCode"
+            Write-Log "WSL apt completed with exit code: $WslExitCode" -Level Warning
         }
     }
     catch {
