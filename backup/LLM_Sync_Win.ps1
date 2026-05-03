@@ -5,7 +5,7 @@
 
 .DESCRIPTION
     Creates per-machine backups with assistant-specific subdirectories:
-    codex/, gemini/, claude/, and shared-skills/.
+    codex/, gemini/, claude/, agents/, and shared-skills/.
 
     The sync is intentionally conservative. It keeps portable configuration,
     prompts, rules, memories, and skills while excluding auth/session data,
@@ -119,6 +119,17 @@ $Script:Assistants = @(
             @{ RelativePath = "skills"; ExcludeNames = @(".git") }
         )
         PreviewFiles = @("settings.json", "statusline-command.sh")
+    },
+    @{
+        Name           = "agents"
+        Source         = Join-Path $env:USERPROFILE ".agents"
+        RootFiles      = @()
+        NestedFiles    = @()
+        Directories    = @(
+            @{ RelativePath = "skills"; ExcludeNames = @(".git") }
+        )
+        PreviewFiles   = @()
+        SkillMigration = $false
     }
 )
 
@@ -138,6 +149,9 @@ function Test-IsDryRun {
 
 function Get-SkillRoot {
     param([hashtable]$Assistant)
+    if ($Assistant.ContainsKey("SkillMigration") -and -not $Assistant.SkillMigration) {
+        return $null
+    }
     if ($Assistant.Name -eq "gemini") {
         return $null
     }

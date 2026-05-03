@@ -33,7 +33,7 @@ LLM Sync scripts provide a separate cross-platform backup and restore flow for a
 
 **Key Features:**
 
-- **Per-Assistant Subdirectories**: Each machine backup stores `codex/`, `gemini/`, `claude/`, and optional `shared-skills/` separately for safer restores.
+- **Per-Assistant Subdirectories**: Each machine backup stores `codex/`, `gemini/`, `claude/`, `agents/`, and optional `shared-skills/` separately for safer restores.
 - **Conservative Whitelisting**: Sync only portable config, prompts, rules, memories, and skills. Skip auth/session files, caches, logs, local databases, and project-local conversation state.
 - **Safety Restore Flow**: Restore creates a pre-restore snapshot outside Git and can preview diffs for key text config files before overwrite.
 - **Scoped Git Integration**: Optional pull before sync and push after backup, staging only the selected backup subtree instead of unrelated repo changes.
@@ -44,9 +44,9 @@ LLM Sync scripts provide a separate cross-platform backup and restore flow for a
 | [`Antigravity_Sync_Win.ps1`](backup/Antigravity_Sync_Win.ps1) | Primary sync tool for Windows. Supports WSL environments and integrated Git sync. |
 | [`Antigravity_Sync_Mac.sh`](backup/Antigravity_Sync_Mac.sh) | macOS implementation with feature parity and Git sync. |
 | [`Antigravity_Sync_Linux.sh`](backup/Antigravity_Sync_Linux.sh) | Linux implementation with feature parity and Git sync. |
-| [`LLM_Sync_Win.ps1`](backup/LLM_Sync_Win.ps1) | Windows backup and restore for portable Codex, Gemini, Claude, and shared `.skills` settings. Gemini restore skips volatile Antigravity state. |
-| [`LLM_Sync_Mac.sh`](backup/LLM_Sync_Mac.sh) | macOS backup and restore for portable Codex, Gemini, Claude, and shared `.skills` settings. Gemini restore skips volatile Antigravity state. |
-| [`LLM_Sync_Linux.sh`](backup/LLM_Sync_Linux.sh) | Linux backup and restore for portable Codex, Gemini, Claude, and shared `.skills` settings. Gemini restore skips volatile Antigravity state. |
+| [`LLM_Sync_Win.ps1`](backup/LLM_Sync_Win.ps1) | Windows backup and restore for portable Codex, Gemini, Claude, Agents, and shared `.skills` settings. Gemini restore skips volatile Antigravity state. |
+| [`LLM_Sync_Mac.sh`](backup/LLM_Sync_Mac.sh) | macOS backup and restore for portable Codex, Gemini, Claude, Agents, and shared `.skills` settings. Gemini restore skips volatile Antigravity state. |
+| [`LLM_Sync_Linux.sh`](backup/LLM_Sync_Linux.sh) | Linux backup and restore for portable Codex, Gemini, Claude, Agents, and shared `.skills` settings. Gemini restore skips volatile Antigravity state. |
 | [`plex_backup.ps1`](backup/plex_backup.ps1) | Backup Plex Media Server data and registry settings to a compressed 7z archive. Handles service stop/start automatically. |
 
 ### System Maintenance
@@ -207,6 +207,7 @@ On macOS and Linux, the backup folder now defaults to the short host name withou
     codex/
     gemini/
     claude/
+    agents/
     shared-skills/
 ```
 

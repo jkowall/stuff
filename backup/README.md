@@ -9,9 +9,9 @@ This directory contains the backup and sync tooling for IDE, LLM, and Plex data.
 | `Antigravity_Sync_Win.ps1` | Windows Antigravity backup and restore with WSL-aware support |
 | `Antigravity_Sync_Linux.sh` | Linux Antigravity backup and restore |
 | `Antigravity_Sync_Mac.sh` | macOS Antigravity backup and restore |
-| `LLM_Sync_Win.ps1` | Windows backup, restore, audit, and shared-skill migration for Codex, Gemini, Claude |
-| `LLM_Sync_Linux.sh` | Linux backup, restore, audit, and shared-skill migration for Codex, Gemini, Claude |
-| `LLM_Sync_Mac.sh` | macOS backup, restore, audit, and shared-skill migration for Codex, Gemini, Claude |
+| `LLM_Sync_Win.ps1` | Windows backup, restore, audit, and shared-skill migration for Codex, Gemini, Claude, and Agents |
+| `LLM_Sync_Linux.sh` | Linux backup, restore, audit, and shared-skill migration for Codex, Gemini, Claude, and Agents |
+| `LLM_Sync_Mac.sh` | macOS backup, restore, audit, and shared-skill migration for Codex, Gemini, Claude, and Agents |
 | `plex_backup.ps1` | Plex backup workflow that stops services and archives data |
 
 ## LLM Sync Model
@@ -24,6 +24,7 @@ The LLM sync scripts treat the backup location as a machine-scoped golden master
     codex/
     gemini/
     claude/
+    agents/
     shared-skills/
 ```
 
@@ -32,6 +33,7 @@ The LLM sync scripts treat the backup location as a machine-scoped golden master
 - `codex/`: portable `AGENTS.md`, `config.toml`, `memories/`, `rules/`, and non-system `skills/`
 - `gemini/`: portable `GEMINI.md`, `settings.json`, selected `antigravity` config files, plus optional backup snapshots of `knowledge/` and `scratch/`
 - `claude/`: portable `settings.json` and `skills/` excluding nested `.git`
+- `agents/`: portable `.agents/skills/` content excluding nested `.git`
 - `shared-skills/`: canonical `~/.skills` content excluding nested `.git`
 
 ### What Does Not Get Backed Up

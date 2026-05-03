@@ -184,6 +184,13 @@ backup_claude() {
     sync_dir_mirror "$HOME/.claude/skills" "$root/skills" ".git/"
 }
 
+backup_agents() {
+    local root=$1/agents
+    remove_tree "$root"
+    run_cmd mkdir -p "$root"
+    sync_dir_mirror "$HOME/.agents/skills" "$root/skills" ".git/"
+}
+
 backup_shared_skills() {
     local root=$1/shared-skills
     [[ -d "$HOME/.skills" ]] || return 0
@@ -201,6 +208,8 @@ backup_all() {
     backup_gemini "$root"
     echo "Backing up Claude..."
     backup_claude "$root"
+    echo "Backing up Agents..."
+    backup_agents "$root"
     echo "Backing up shared skills..."
     backup_shared_skills "$root"
 }
@@ -390,6 +399,13 @@ restore_claude() {
     sync_dir_mirror "$root/skills" "$HOME/.claude/skills" ".git/"
 }
 
+restore_agents() {
+    local root=$1/agents
+    [[ -d "$root" ]] || return 0
+    run_cmd mkdir -p "$HOME/.agents"
+    sync_dir_mirror "$root/skills" "$HOME/.agents/skills" ".git/"
+}
+
 restore_shared_skills() {
     local root=$1/shared-skills
     [[ -d "$root" ]] || return 0
@@ -560,6 +576,8 @@ else
     restore_gemini "$BACKUP_DIR"
     echo "Restoring Claude..."
     restore_claude "$BACKUP_DIR"
+    echo "Restoring Agents..."
+    restore_agents "$BACKUP_DIR"
     echo "Restoring shared skills..."
     restore_shared_skills "$BACKUP_DIR"
     echo "Restore complete."

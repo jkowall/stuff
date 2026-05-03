@@ -52,7 +52,7 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 - **`system/macos/sync_apps.sh`** - Syncs Mac apps between machines
 - **`backup/plex_backup.ps1`** - Requires admin privileges, stops Plex services during backup
 - **`backup/Antigravity_Sync_*`** - Cross-platform sync suite (Win/Mac/Linux) with versioning, safety backups, and extension reconciliation
-- **`backup/LLM_Sync_*`** - Cross-platform sync suite (Win/Mac/Linux) for portable Codex, Gemini, Claude, and shared `.skills` settings
+- **`backup/LLM_Sync_*`** - Cross-platform sync suite (Win/Mac/Linux) for portable Codex, Gemini, Claude, Agents, and shared `.skills` settings
 
 ## Coding Guidelines
 
@@ -133,9 +133,9 @@ git config commit.gpgsign true
 │   ├── Antigravity_Sync_Win.ps1       # Windows Antigravity sync (Git-integrated)
 │   ├── Antigravity_Sync_Mac.sh        # macOS Antigravity sync (Git-integrated)
 │   ├── Antigravity_Sync_Linux.sh      # Linux Antigravity sync (Git-integrated)
-│   ├── LLM_Sync_Win.ps1               # Windows Codex/Gemini/Claude/shared-skills sync
-│   ├── LLM_Sync_Mac.sh                # macOS Codex/Gemini/Claude/shared-skills sync
-│   ├── LLM_Sync_Linux.sh              # Linux Codex/Gemini/Claude/shared-skills sync
+│   ├── LLM_Sync_Win.ps1               # Windows Codex/Gemini/Claude/Agents/shared-skills sync
+│   ├── LLM_Sync_Mac.sh                # macOS Codex/Gemini/Claude/Agents/shared-skills sync
+│   ├── LLM_Sync_Linux.sh              # Linux Codex/Gemini/Claude/Agents/shared-skills sync
 │   └── plex_backup.ps1               # Plex Media Server backup
 │
 ├── system/                            # System Maintenance
