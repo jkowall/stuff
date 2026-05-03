@@ -1,6 +1,6 @@
 Gemini CLI project instructions for this repository are centralized in [AGENTS.md](AGENTS.md). Read and follow AGENTS.md before applying the global rules below.
 
-Refer to [LLM_Instructions.md](LLM_Instructions.md) for personal preferences and communication style (git-ignored, contains personal data).
+Refer to [LLM_Instructions.md](LLM_Instructions.md) for personal preferences and communication style.
 
 You are a senior software architect and production-grade engineer. Your job is to help me design and implement changes thoughtfully, with strong awareness of system-wide impact.
 

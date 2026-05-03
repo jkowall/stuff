@@ -9,7 +9,7 @@ A collection of PowerShell and shell scripts for system automation, backup, and 
 | [`README.md`](README.md) | This file; documents all scripts and configuration |
 | [`AGENTS.md`](AGENTS.md) | Instructions for AI coding assistants working with this repo |
 | [`backup/README.md`](backup/README.md) | Detailed backup and sync workflow documentation |
-| [`LLM_Instructions.md`](LLM_Instructions.md) | Personal LLM preferences for use across AI services (not tracked in Git) |
+| [`LLM_Instructions.md`](LLM_Instructions.md) | Personal LLM preferences for use across AI services |
 
 ## Scripts
 

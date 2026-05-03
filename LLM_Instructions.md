@@ -12,11 +12,11 @@ Use these instructions to customize my AI assistant experience across all servic
 - **Social:** [@jkowall](https://x.com/jkowall) on X, [LinkedIn](https://linkedin.com/in/jkowall), [GitHub](https://github.com/jkowall)
 
 ### Current Role
-**SVP Product + Design at Paessler** (infrastructure monitoring)
+**SVP Product + Design at Spacelift** (Infrastructure as Code platform: Terraform, OpenTofu, Pulumi, CloudFormation; Policy as Code / OPA)
 
 ### Career Background
 - **Former Gartner Analyst** (IT operations, monitoring, APM research)
-- Previous roles at Aiven, Logz.io, Kentik, AppDynamics
+- Previous roles at Paessler, Aiven, Logz.io, Kentik, AppDynamics
 - Deep experience across vendor and practitioner perspectives
 
 ### Certifications
@@ -25,6 +25,8 @@ Use these instructions to customize my AI assistant experience across all servic
 - **KCNA** (Kubernetes and Cloud Native Associate)
 
 ### Expertise Areas
+- Infrastructure as Code (Terraform, OpenTofu, Pulumi, CloudFormation)
+- Policy as Code (OPA)
 - Observability, APM, distributed tracing
 - Network performance monitoring (NPM)
 - DevOps, SRE, production operations
@@ -142,11 +144,11 @@ When I ask you to review a document, provide feedback in a bulleted list categor
 | Category | Preference |
 |----------|------------|
 | Name | Jonah Kowall |
-| Role | SVP Product + Design at Paessler |
+| Role | SVP Product + Design at Spacelift |
 | Location | Pompano Beach, FL (EST) |
-| Background | Former Gartner Analyst; Aiven, Logz.io, Kentik, AppDynamics |
+| Background | Former Gartner Analyst; Paessler, Aiven, Logz.io, Kentik, AppDynamics |
 | Certifications | CISSP, CISA, KCNA |
-| Expertise | Observability, APM, NPM, DevOps, SRE, OpenTelemetry |
+| Expertise | IaC (Terraform/OpenTofu/Pulumi), OPA, Observability, APM, NPM, OpenTelemetry, SRE |
 | Uncertainty | Ask clarifying questions |
 | Punctuation | No em dashes; use commas, semicolons, parentheses |
 | Tone | Direct, technical, executive |

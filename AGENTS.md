@@ -37,7 +37,7 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 | `AGENTS.md` | Centralized AI assistant instructions (this file) |
 | `CLAUDE.md` | Claude Code entry point; defers to AGENTS.md |
 | `GEMINI.md` | Gemini entry point; defers to AGENTS.md |
-| `LLM_Instructions.md` | Personal LLM preferences for use across AI services (git-ignored, contains personal data) |
+| `LLM_Instructions.md` | Personal LLM preferences for use across AI services |
 
 ### Key Scripts
 
@@ -126,7 +126,7 @@ git config commit.gpgsign true
 ├── AGENTS.md                         # Centralized AI instructions (this file)
 ├── CLAUDE.md                         # Claude Code entry point
 ├── GEMINI.md                         # Gemini entry point
-├── LLM_Instructions.md               # Personal LLM preferences (git-ignored)
+├── LLM_Instructions.md               # Personal LLM preferences
 ├── LICENSE                            # License file
 │
 ├── backup/                            # Backup & Sync
