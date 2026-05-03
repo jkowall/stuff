@@ -19,7 +19,8 @@ param(
     [switch]$SkipNpm,
     [switch]$SkipWsl,
     [switch]$SkipPip,
-    [switch]$Elevated
+    [switch]$Elevated,
+    [switch]$NoPause
 )
 
 # ============================================================================
@@ -170,10 +171,27 @@ function Show-ToastNotification {
 function Get-WingetCommand {
     $WingetCommand = Get-Command winget.exe -ErrorAction SilentlyContinue
     if (-not $WingetCommand) {
-        $WingetCommand = Get-Command winget -ErrorAction Stop
+        $WingetCommand = Get-Command winget -ErrorAction SilentlyContinue
     }
 
-    return $WingetCommand
+    if ($WingetCommand) {
+        return $WingetCommand
+    }
+
+    $WindowsAppsWinget = Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps\winget.exe"
+    if (Test-Path $WindowsAppsWinget) {
+        return [pscustomobject]@{ Source = $WindowsAppsWinget }
+    }
+
+    $AppInstaller = Get-AppxPackage -Name Microsoft.DesktopAppInstaller -ErrorAction SilentlyContinue
+    if ($AppInstaller) {
+        $PackagedWinget = Join-Path $AppInstaller.InstallLocation "winget.exe"
+        if (Test-Path $PackagedWinget) {
+            return [pscustomobject]@{ Source = $PackagedWinget }
+        }
+    }
+
+    throw "winget was not found in PATH, WindowsApps, or the Desktop App Installer package."
 }
 
 function Get-NpmCommand {
@@ -183,6 +201,70 @@ function Get-NpmCommand {
     }
 
     return $NpmCommand
+}
+
+function Get-WingetUpgradeIds {
+    param(
+        [Parameter(Mandatory = $true)]
+        $WingetPath,
+        [Parameter(Mandatory = $true)]
+        [string]$Source
+    )
+
+    Write-Log "Checking for remaining $Source upgrades..." -Level Info
+    $Output = & $WingetPath.Source upgrade --source $Source --include-unknown --accept-source-agreements 2>&1
+    $Ids = New-Object System.Collections.Generic.List[string]
+
+    foreach ($Line in $Output) {
+        $Text = "$Line".Trim()
+        if ([string]::IsNullOrWhiteSpace($Text)) { continue }
+
+        Write-Log $Text -Level Info
+
+        $Columns = $Text -split '\s+'
+        if ($Columns.Count -lt 5) { continue }
+        if ($Columns[-1] -ne $Source) { continue }
+
+        $Id = $Columns[-4]
+        if ($Id -eq "Id") { continue }
+        if (-not $Ids.Contains($Id)) {
+            $Ids.Add($Id)
+        }
+    }
+
+    return @($Ids)
+}
+
+function Invoke-WingetExplicitUpgrades {
+    param(
+        [Parameter(Mandatory = $true)]
+        $WingetPath,
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+        [string[]]$PackageIds = @()
+    )
+
+    $Succeeded = 0
+    $Failed = New-Object System.Collections.Generic.List[string]
+
+    foreach ($PackageId in ($PackageIds | Where-Object { $_ } | Select-Object -Unique)) {
+        Write-Log "Running: winget upgrade --id $PackageId -e --source $Source --include-unknown --accept-package-agreements --accept-source-agreements" -Level Info
+        & $WingetPath.Source upgrade --id $PackageId -e --source $Source --include-unknown --accept-package-agreements --accept-source-agreements
+
+        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) {
+            $Succeeded++
+            Write-Log "Explicit upgrade completed for $PackageId" -Level Success
+        }
+        else {
+            $Failed.Add($PackageId)
+            Write-Log "Explicit upgrade failed for $PackageId with exit code: $LASTEXITCODE" -Level Warning
+        }
+    }
+
+    return [pscustomobject]@{
+        Succeeded = $Succeeded
+        Failed    = @($Failed)
+    }
 }
 
 function Update-Winget {
@@ -209,27 +291,37 @@ function Update-Winget {
         Write-Log "Running: winget upgrade --all --source winget --include-unknown --accept-package-agreements --accept-source-agreements" -Level Info
 
         & $WingetPath.Source upgrade --all --source winget --include-unknown --accept-package-agreements --accept-source-agreements
+        $BulkExitCode = $LASTEXITCODE
 
-        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) {
-            $script:Results.Winget.Status = "Success"
-            $script:Results.Winget.Message = "Winget packages updated successfully"
+        if ($BulkExitCode -eq 0 -or $BulkExitCode -eq $null) {
             Write-Log "Winget updates completed successfully" -Level Success
         }
         else {
-            $script:Results.Winget.Status = "Warning"
-            $script:Results.Winget.Message = "Winget completed with exit code: $LASTEXITCODE"
-            Write-Log "Winget completed with exit code: $LASTEXITCODE" -Level Warning
+            Write-Log "Winget completed with exit code: $BulkExitCode" -Level Warning
         }
 
-        # Explicitly upgrade PowerShell — winget upgrade --all often skips it
-        # due to MSI installer detection issues
-        Write-Log "Ensuring PowerShell 7+ is up to date..." -Level Info
-        & $WingetPath.Source upgrade Microsoft.PowerShell --source winget --accept-package-agreements --accept-source-agreements
-        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) {
-            Write-Log "PowerShell upgrade check completed" -Level Success
+        # winget --all can leave packages behind when they require explicit targeting.
+        # PowerShell also commonly needs explicit handling due to MSI detection issues.
+        $ExplicitIds = @("Microsoft.PowerShell") + (Get-WingetUpgradeIds -WingetPath $WingetPath -Source "winget")
+        $ExplicitResult = Invoke-WingetExplicitUpgrades -WingetPath $WingetPath -Source "winget" -PackageIds $ExplicitIds
+
+        if (($BulkExitCode -eq 0 -or $BulkExitCode -eq $null) -and $ExplicitResult.Failed.Count -eq 0) {
+            $script:Results.Winget.Status = "Success"
+            if ($ExplicitResult.Succeeded -gt 0) {
+                $script:Results.Winget.Message = "Winget packages updated successfully ($($ExplicitResult.Succeeded) explicit checks)"
+            }
+            else {
+                $script:Results.Winget.Message = "Winget packages updated successfully"
+            }
         }
         else {
-            Write-Log "PowerShell upgrade completed with exit code: $LASTEXITCODE (may already be current)" -Level Warning
+            $script:Results.Winget.Status = "Warning"
+            if ($ExplicitResult.Failed.Count -gt 0) {
+                $script:Results.Winget.Message = "Winget completed with issues; failed explicit upgrades: $($ExplicitResult.Failed -join ', ')"
+            }
+            else {
+                $script:Results.Winget.Message = "Winget completed with exit code: $BulkExitCode"
+            }
         }
     }
     catch {
@@ -252,16 +344,35 @@ function Update-WindowsStore {
         Write-Log "Running: winget upgrade --all --source msstore --include-unknown --accept-package-agreements --accept-source-agreements" -Level Info
 
         & $WingetPath.Source upgrade --all --source msstore --include-unknown --accept-package-agreements --accept-source-agreements
+        $BulkExitCode = $LASTEXITCODE
 
-        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) {
-            $script:Results.WindowsStore.Status = "Success"
-            $script:Results.WindowsStore.Message = "Windows Store packages updated successfully"
+        if ($BulkExitCode -eq 0 -or $BulkExitCode -eq $null) {
             Write-Log "Windows Store updates completed successfully" -Level Success
         }
         else {
+            Write-Log "Windows Store updates completed with exit code: $BulkExitCode" -Level Warning
+        }
+
+        $ExplicitIds = Get-WingetUpgradeIds -WingetPath $WingetPath -Source "msstore"
+        $ExplicitResult = Invoke-WingetExplicitUpgrades -WingetPath $WingetPath -Source "msstore" -PackageIds $ExplicitIds
+
+        if (($BulkExitCode -eq 0 -or $BulkExitCode -eq $null) -and $ExplicitResult.Failed.Count -eq 0) {
+            $script:Results.WindowsStore.Status = "Success"
+            if ($ExplicitResult.Succeeded -gt 0) {
+                $script:Results.WindowsStore.Message = "Windows Store packages updated successfully ($($ExplicitResult.Succeeded) explicit checks)"
+            }
+            else {
+                $script:Results.WindowsStore.Message = "Windows Store packages updated successfully"
+            }
+        }
+        else {
             $script:Results.WindowsStore.Status = "Warning"
-            $script:Results.WindowsStore.Message = "Windows Store updates completed with exit code: $LASTEXITCODE"
-            Write-Log "Windows Store updates completed with exit code: $LASTEXITCODE" -Level Warning
+            if ($ExplicitResult.Failed.Count -gt 0) {
+                $script:Results.WindowsStore.Message = "Windows Store completed with issues; failed explicit upgrades: $($ExplicitResult.Failed -join ', ')"
+            }
+            else {
+                $script:Results.WindowsStore.Message = "Windows Store updates completed with exit code: $BulkExitCode"
+            }
         }
     }
     catch {
@@ -612,6 +723,7 @@ if (-not $IsAdmin -and -not $Elevated) {
         if ($SkipNpm) { $RelaunchArgs += "-SkipNpm" }
         if ($SkipWsl) { $RelaunchArgs += "-SkipWsl" }
         if ($SkipPip) { $RelaunchArgs += "-SkipPip" }
+        if ($NoPause) { $RelaunchArgs += "-NoPause" }
         $RelaunchArgs += "-SkipUserChocolatey" # Handled in this process
 
         Start-Process "powershell.exe" -ArgumentList $RelaunchArgs -Verb RunAs -Wait
@@ -639,6 +751,11 @@ if ($Elevated -or $IsAdmin) {
     # Only show summary and completion wait in the "active" or final process
     Show-Summary
     Write-Log "" -Level Info
-    Write-Log "Update process completed. Press Enter to close this window..." -Level Info
-    Read-Host
+    if ($NoPause) {
+        Write-Log "Update process completed." -Level Info
+    }
+    else {
+        Write-Log "Update process completed. Press Enter to close this window..." -Level Info
+        Read-Host
+    }
 }

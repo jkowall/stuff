@@ -19,12 +19,14 @@
 
 param(
     [switch]$Remove,
-    [switch]$InstallBurntToast
+    [switch]$InstallBurntToast,
+    [switch]$NoPause
 )
 
 $TaskName = "Weekly Package Updates"
 $ScriptDir = $PSScriptRoot
 $UpdateScript = Join-Path $ScriptDir "Update-AllPackages_Win.ps1"
+$IsAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 function Get-PackageUpdateTasks {
     try {
@@ -56,7 +58,7 @@ function Remove-PackageUpdateTasks {
 
     foreach ($Task in $Tasks) {
         Write-Status "Removing scheduled task: $($Task.TaskPath)$($Task.TaskName)" -Level Info
-        Unregister-ScheduledTask -TaskName $Task.TaskName -TaskPath $Task.TaskPath -Confirm:$false
+        Unregister-ScheduledTask -TaskName $Task.TaskName -TaskPath $Task.TaskPath -Confirm:$false -ErrorAction Stop
     }
 }
 
@@ -106,6 +108,24 @@ if ($InstallBurntToast) {
     }
 }
 
+if (-not $IsAdmin) {
+    Write-Status "Administrator privileges are required to manage the elevated scheduled task. Requesting elevation..." -Level Warning
+
+    $RelaunchArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"")
+    if ($Remove) { $RelaunchArgs += "-Remove" }
+    if ($InstallBurntToast) { $RelaunchArgs += "-InstallBurntToast" }
+    if ($NoPause) { $RelaunchArgs += "-NoPause" }
+
+    try {
+        Start-Process "powershell.exe" -ArgumentList $RelaunchArgs -Verb RunAs -Wait
+    }
+    catch {
+        Write-Status "Elevation was not completed: $($_.Exception.Message)" -Level Error
+    }
+
+    exit
+}
+
 # ============================================================================
 # REMOVE TASK
 # ============================================================================
@@ -142,14 +162,16 @@ try {
     # Create the action - run PowerShell with the script
     $Action = New-ScheduledTaskAction `
         -Execute "powershell.exe" `
-        -Argument "-ExecutionPolicy Bypass -NoExit -File `"$UpdateScript`"" `
-        -WorkingDirectory $ScriptDir
+        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$UpdateScript`" -NoPause" `
+        -WorkingDirectory $ScriptDir `
+        -ErrorAction Stop
 
     # Create the trigger - every Saturday at 1:00 AM
     $Trigger = New-ScheduledTaskTrigger `
         -Weekly `
         -DaysOfWeek Saturday `
-        -At "1:00AM"
+        -At "1:00AM" `
+        -ErrorAction Stop
 
     # Create settings
     $Settings = New-ScheduledTaskSettingsSet `
@@ -157,13 +179,15 @@ try {
         -DontStopIfGoingOnBatteries `
         -StartWhenAvailable `
         -RunOnlyIfNetworkAvailable `
-        -WakeToRun:$false
+        -WakeToRun:$false `
+        -ErrorAction Stop
 
-    # Create principal - run as current user, interactive (so you can see the window)
+    # Create principal - run elevated as current user so scheduled runs do not stall at UAC.
     $Principal = New-ScheduledTaskPrincipal `
         -UserId $env:USERNAME `
         -LogonType Interactive `
-        -RunLevel Limited
+        -RunLevel Highest `
+        -ErrorAction Stop
 
     # Register the task
     Register-ScheduledTask `
@@ -172,13 +196,15 @@ try {
         -Trigger $Trigger `
         -Settings $Settings `
         -Principal $Principal `
-        -Description "Weekly update of winget, Windows Store, Chocolatey, npm, WSL apt, and pip packages. Runs every Saturday at 1:00 AM."
+        -Description "Weekly update of winget, Windows Store, Chocolatey, npm, WSL apt, and pip packages. Runs every Saturday at 1:00 AM." `
+        -ErrorAction Stop
 
     Write-Status "Scheduled task created successfully!" -Level Success
     Write-Status "" -Level Info
     Write-Status "Task Details:" -Level Info
     Write-Status "  Name: $TaskName" -Level Info
     Write-Status "  Schedule: Every Saturday at 1:00 AM" -Level Info
+    Write-Status "  Run level: Highest available privileges" -Level Info
     Write-Status "  Script: $UpdateScript" -Level Info
     Write-Status "" -Level Info
     Write-Status "To run the update manually, execute:" -Level Info
@@ -195,6 +221,8 @@ catch {
     Write-Status "Try: Start-Process powershell -Verb RunAs -ArgumentList '-File `"$PSCommandPath`"'" -Level Info
 }
 
-Write-Host ""
-Write-Host "Press Enter to exit..."
-Read-Host
+if (-not $NoPause) {
+    Write-Host ""
+    Write-Host "Press Enter to exit..."
+    Read-Host
+}
