@@ -13,6 +13,7 @@ plex_backup.json
 # macOS metadata and local artifacts
 .DS_Store
 cookies.txt
+.claude/
 
 # Audit and Local Data
 system/macos/mac_apps_audit.json
