@@ -26,6 +26,7 @@ param(
 $TaskName = "Weekly Package Updates"
 $ScriptDir = $PSScriptRoot
 $UpdateScript = Join-Path $ScriptDir "Update-AllPackages_Win.ps1"
+$ScheduledRunKeepOpenMinutes = 720
 $IsAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 function Get-PackageUpdateTasks {
@@ -162,7 +163,7 @@ try {
     # Create the action - run PowerShell with the script
     $Action = New-ScheduledTaskAction `
         -Execute "powershell.exe" `
-        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$UpdateScript`" -NoPause" `
+        -Argument "-WindowStyle Normal -NoProfile -ExecutionPolicy Bypass -File `"$UpdateScript`" -NoPause -KeepOpenMinutes $ScheduledRunKeepOpenMinutes" `
         -WorkingDirectory $ScriptDir `
         -ErrorAction Stop
 
@@ -205,6 +206,7 @@ try {
     Write-Status "  Name: $TaskName" -Level Info
     Write-Status "  Schedule: Every Saturday at 1:00 AM" -Level Info
     Write-Status "  Run level: Highest available privileges" -Level Info
+    Write-Status "  Window: Normal PowerShell window, kept open for $ScheduledRunKeepOpenMinutes minutes after completion" -Level Info
     Write-Status "  Script: $UpdateScript" -Level Info
     Write-Status "" -Level Info
     Write-Status "To run the update manually, execute:" -Level Info

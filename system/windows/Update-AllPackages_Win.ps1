@@ -20,7 +20,8 @@ param(
     [switch]$SkipWsl,
     [switch]$SkipPip,
     [switch]$Elevated,
-    [switch]$NoPause
+    [switch]$NoPause,
+    [int]$KeepOpenMinutes = 0
 )
 
 # ============================================================================
@@ -724,6 +725,7 @@ if (-not $IsAdmin -and -not $Elevated) {
         if ($SkipWsl) { $RelaunchArgs += "-SkipWsl" }
         if ($SkipPip) { $RelaunchArgs += "-SkipPip" }
         if ($NoPause) { $RelaunchArgs += "-NoPause" }
+        if ($KeepOpenMinutes -gt 0) { $RelaunchArgs += @("-KeepOpenMinutes", $KeepOpenMinutes) }
         $RelaunchArgs += "-SkipUserChocolatey" # Handled in this process
 
         Start-Process "powershell.exe" -ArgumentList $RelaunchArgs -Verb RunAs -Wait
@@ -751,7 +753,12 @@ if ($Elevated -or $IsAdmin) {
     # Only show summary and completion wait in the "active" or final process
     Show-Summary
     Write-Log "" -Level Info
-    if ($NoPause) {
+    if ($KeepOpenMinutes -gt 0) {
+        $CloseAt = (Get-Date).AddMinutes($KeepOpenMinutes)
+        Write-Log "Update process completed. Keeping this window open until $($CloseAt.ToString('yyyy-MM-dd HH:mm')) unless you close it first." -Level Info
+        Start-Sleep -Seconds ($KeepOpenMinutes * 60)
+    }
+    elseif ($NoPause) {
         Write-Log "Update process completed." -Level Info
     }
     else {

@@ -22,7 +22,7 @@ This directory contains system automation and maintenance scripts, organized by 
 | Script | Description |
 |--------|-------------|
 | `Update-AllPackages_Win.ps1` | Weekly updater for winget, Windows Store, Chocolatey, npm, WSL apt, and pip. |
-| `Setup-PackageUpdateTasks.ps1` | Sets up a Windows Task Scheduler task for weekly updates. |
+| `Setup-PackageUpdateTasks.ps1` | Sets up a Windows Task Scheduler task for weekly updates and keeps the scheduled run window visible after completion. |
 | `list_apps.ps1` | Lists installed apps from Registry, Store, Winget, Choco, Scoop, and npm. |
 | `Update-CloudflareDNS.ps1` | Dynamic DNS updater for Cloudflare. |
 | `clean_plex.ps1` | Cleanup utility for Plex Media Server data. |
