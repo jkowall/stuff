@@ -72,6 +72,7 @@ The `system/` directory is organized by platform: `macos/`, `windows/`, and `lin
 | [`Update-CloudflareDNS.ps1`](system/windows/Update-CloudflareDNS.ps1) | Dynamic DNS updater for Cloudflare. |
 | [`clean_plex.ps1`](system/windows/clean_plex.ps1) | Cleans up orphaned data and caches in Plex Media Server. |
 | [`restart_camera_hub.ps1`](system/windows/restart_camera_hub.ps1) | Restarts the Elgato Camera Hub application. |
+| [`Toggle-PrompterDisplayAndRestartCameraHub.ps1`](system/windows/Toggle-PrompterDisplayAndRestartCameraHub.ps1) | Toggles the Elgato Prompter display and restarts Camera Hub after power-off. |
 
 #### Linux (`system/linux/`)
 

@@ -48,6 +48,7 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 - **`system/linux/Setup-PackageUpdateTasks_Linux.sh`** - Linux cron setup and cleanup for package updates
 - **`system/macos/Setup-PackageUpdateTasks_Mac.sh`** - macOS launchd setup and cleanup for package updates
 - **`system/windows/Update-CloudflareDNS.ps1`** - Makes external API calls to Cloudflare
+- **`system/windows/Toggle-PrompterDisplayAndRestartCameraHub.ps1`** - Toggles the Elgato Prompter display and restarts Camera Hub after power-off
 - **`system/macos/audit_apps.sh`** - Audits installed Mac GUI apps
 - **`system/macos/sync_apps.sh`** - Syncs Mac apps between machines
 - **`backup/plex_backup.ps1`** - Requires admin privileges, stops Plex services during backup
@@ -151,7 +152,8 @@ git config commit.gpgsign true
 │   │   ├── Update-CloudflareDNS.ps1    # Dynamic DNS
 │   │   ├── clean_plex.ps1             # Plex cleanup
 │   │   ├── list_apps.ps1              # List installed apps
-│   │   └── restart_camera_hub.ps1     # Restart Elgato Camera Hub
+│   │   ├── restart_camera_hub.ps1     # Restart Elgato Camera Hub
+│   │   └── Toggle-PrompterDisplayAndRestartCameraHub.ps1 # Toggle Prompter and restart Camera Hub
 │   └── linux/                         # Linux scripts
 │       ├── Update-AllPackages_Linux.sh # Linux package updater
 │       └── Setup-PackageUpdateTasks_Linux.sh # Linux cron setup

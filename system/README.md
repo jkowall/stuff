@@ -27,6 +27,7 @@ This directory contains system automation and maintenance scripts, organized by 
 | `Update-CloudflareDNS.ps1` | Dynamic DNS updater for Cloudflare. |
 | `clean_plex.ps1` | Cleanup utility for Plex Media Server data. |
 | `restart_camera_hub.ps1` | Restarts Elgato Camera Hub application. |
+| `Toggle-PrompterDisplayAndRestartCameraHub.ps1` | Toggles the Elgato Prompter display and restarts Camera Hub after power-off. |
 
 ## Linux Scripts (`system/linux/`)
 
