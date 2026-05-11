@@ -8,6 +8,9 @@ PLIST_DIR="${HOME}/Library/LaunchAgents"
 PLIST_PATH="${PLIST_DIR}/com.jkowa.weekly-package-updates.plist"
 LABEL="com.jkowa.weekly-package-updates"
 LAUNCHD_LOG="${HOME}/Library/Logs/com.jkowa.weekly-package-updates.log"
+RUNNER_DIR="${HOME}/Library/Application Scripts/${LABEL}"
+RUNNER_PATH="${RUNNER_DIR}/run.sh"
+CACHED_UPDATE_SCRIPT="${RUNNER_DIR}/Update-AllPackages_Mac.sh"
 
 write_status() {
     local level="$1"
@@ -53,10 +56,50 @@ remove_schedule() {
     else
         write_status "Info" "No launchd job file found at ${PLIST_PATH}."
     fi
+
+    if [ -d "$RUNNER_DIR" ]; then
+        rm -f "$RUNNER_PATH" "$CACHED_UPDATE_SCRIPT"
+        rmdir "$RUNNER_DIR" 2>/dev/null || true
+        write_status "Success" "Removed local runner ${RUNNER_DIR}."
+    fi
+}
+
+install_runner() {
+    mkdir -p "$RUNNER_DIR"
+
+    install -m 755 "$UPDATE_SCRIPT" "$CACHED_UPDATE_SCRIPT"
+
+    cat > "$RUNNER_PATH" <<EOF
+#!/bin/bash
+
+set -euo pipefail
+
+SOURCE_SCRIPT="${UPDATE_SCRIPT}"
+CACHED_SCRIPT="${CACHED_UPDATE_SCRIPT}"
+LOG_PATH="${LAUNCHD_LOG}"
+
+if [ -r "\$SOURCE_SCRIPT" ]; then
+    if ! /usr/bin/install -m 755 "\$SOURCE_SCRIPT" "\$CACHED_SCRIPT" >> "\$LOG_PATH" 2>&1; then
+        echo "Warning: failed to refresh cached updater from \$SOURCE_SCRIPT. Running existing cached copy." >> "\$LOG_PATH"
+    fi
+else
+    echo "Warning: source updater is not readable: \$SOURCE_SCRIPT. Running existing cached copy." >> "\$LOG_PATH"
+fi
+
+if [ ! -x "\$CACHED_SCRIPT" ]; then
+    echo "Error: cached updater is missing or not executable: \$CACHED_SCRIPT" >> "\$LOG_PATH"
+    exit 126
+fi
+
+exec /bin/bash "\$CACHED_SCRIPT" "\$@"
+EOF
+
+    chmod 755 "$RUNNER_PATH"
 }
 
 install_schedule() {
     mkdir -p "$PLIST_DIR" "$(dirname "$LAUNCHD_LOG")"
+    install_runner
     bootout_agent
 
     cat > "$PLIST_PATH" <<EOF
@@ -69,14 +112,14 @@ install_schedule() {
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>${UPDATE_SCRIPT}</string>
+        <string>${RUNNER_PATH}</string>
     </array>
     <key>RunAtLoad</key>
     <false/>
     <key>StartCalendarInterval</key>
     <dict>
         <key>Weekday</key>
-        <integer>7</integer>
+        <integer>6</integer>
         <key>Hour</key>
         <integer>1</integer>
         <key>Minute</key>
@@ -95,7 +138,9 @@ EOF
     write_status "Success" "Installed launchd job ${LABEL}."
     write_status "Info" "Schedule: Every Saturday at 1:00 AM"
     write_status "Info" "Plist: ${PLIST_PATH}"
-    write_status "Info" "Script: ${UPDATE_SCRIPT}"
+    write_status "Info" "Runner: ${RUNNER_PATH}"
+    write_status "Info" "Source script: ${UPDATE_SCRIPT}"
+    write_status "Info" "Cached script: ${CACHED_UPDATE_SCRIPT}"
 }
 
 main() {
