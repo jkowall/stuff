@@ -11,6 +11,7 @@ LAUNCHD_LOG="${HOME}/Library/Logs/com.jkowa.weekly-package-updates.log"
 RUNNER_DIR="${HOME}/Library/Application Scripts/${LABEL}"
 RUNNER_PATH="${RUNNER_DIR}/run.sh"
 CACHED_UPDATE_SCRIPT="${RUNNER_DIR}/Update-AllPackages_Mac.sh"
+INTERACTIVE_MODE=0
 
 write_status() {
     local level="$1"
@@ -34,6 +35,8 @@ Usage: $(basename "$0") [--remove]
 
 Installs or removes a weekly launchd job for Update-AllPackages_Mac.sh.
 Reinstalling replaces any existing job with the same label.
+Use --interactive to open an interactive Terminal session when triggered by launchd
+so you can enter sudo/app-specific passwords if required.
 EOF
 }
 
@@ -102,6 +105,11 @@ install_schedule() {
     install_runner
     bootout_agent
 
+    local runner_args=""
+    if [ "${INTERACTIVE_MODE}" -eq 1 ]; then
+        runner_args="        <string>--interactive</string>"
+    fi
+
     cat > "$PLIST_PATH" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -113,6 +121,7 @@ install_schedule() {
     <array>
         <string>/bin/bash</string>
         <string>${RUNNER_PATH}</string>
+${runner_args}
     </array>
     <key>RunAtLoad</key>
     <false/>
@@ -146,6 +155,10 @@ EOF
 main() {
     case "${1:-}" in
         "")
+            install_schedule
+            ;;
+        "--interactive")
+            INTERACTIVE_MODE=1
             install_schedule
             ;;
         "--remove")

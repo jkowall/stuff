@@ -17,6 +17,12 @@ SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}" .sh)"
 MACHINE_NAME="$(hostname)"
 TIMESTAMP="$(date +%Y-%m-%d_%H-%m)"
 LOG_FILE="${LOG_DIR}/${SCRIPT_NAME}_${MACHINE_NAME}_${TIMESTAMP}.log"
+INTERACTIVE_MODE=0
+
+if [[ "${1:-}" == "--interactive" || "${1:-}" == "--interactive-run" ]]; then
+    INTERACTIVE_MODE=1
+    shift
+fi
 
 # Ensure log directory exists
 mkdir -p "$LOG_DIR"
@@ -26,6 +32,7 @@ BREW_STATUS="Skipped"
 MAS_STATUS="Skipped"
 NPM_STATUS="Skipped"
 PIP_STATUS="Skipped"
+PIPX_STATUS="Skipped"
 RUSTUP_STATUS="Skipped"
 
 # ============================================================================
@@ -67,8 +74,38 @@ monitor.pathUpdateHandler = { path in
 monitor.start(queue: DispatchQueue.global())
 _ = semaphore.wait(timeout: .now() + 5)
 monitor.cancel()
-exit(isConstrained ? 0 : 1)
+    exit(isConstrained ? 0 : 1)
 SWIFT
+}
+
+launch_interactive_terminal() {
+    if [ "$INTERACTIVE_MODE" -ne 1 ]; then
+        return 0
+    fi
+
+    if [ -t 0 ] || [ -t 1 ]; then
+        return 0
+    fi
+
+    local script_path
+    script_path="$(/usr/bin/realpath "$0" 2>/dev/null || printf '%s' "$0")"
+    local terminal_cmd
+    terminal_cmd="bash '${script_path}' --interactive-run"
+
+    log "Info" "Interactive mode requested. Relaunching in Terminal for user interaction."
+
+    if ! /usr/bin/osascript <<OSA
+tell application "Terminal"
+    activate
+    do script "${terminal_cmd}"
+end tell
+OSA
+    then
+        log "Error" "Failed to launch Terminal for interactive update run."
+        return 1
+    fi
+
+    exit 0
 }
 
 show_notification() {
@@ -167,7 +204,17 @@ update_pip() {
     log "Info" "============================================================"
 
     log "Info" "Upgrading pip itself..."
-    pip3 install --upgrade pip 2>&1 | tee -a "$LOG_FILE"
+    local pip_upgrade_output=""
+    if ! pip_upgrade_output="$(pip3 install --upgrade pip 2>&1)"; then
+        echo "$pip_upgrade_output" | tee -a "$LOG_FILE"
+        if echo "$pip_upgrade_output" | grep -qi "externally-managed-environment"; then
+            log "Warning" "pip is in an externally managed environment. Skipping pip self-upgrade."
+        else
+            log "Warning" "Unable to upgrade pip. Continuing with package checks."
+        fi
+    else
+        echo "$pip_upgrade_output" | tee -a "$LOG_FILE"
+    fi
 
     log "Info" "Checking for outdated packages..."
     OUTDATED_JSON=$(pip3 list --outdated --format=json 2>/dev/null) || true
@@ -192,12 +239,29 @@ update_pip() {
     local succeeded=0
     local failed=""
     for pkg in $PACKAGES; do
-        if pip3 install --upgrade "$pkg" >> "$LOG_FILE" 2>&1; then
+        local upgrade_output
+        if upgrade_output="$(pip3 install --upgrade "$pkg" 2>&1)"; then
+            echo "$upgrade_output" | tee -a "$LOG_FILE"
             log "Success" "  Upgraded $pkg"
             succeeded=$((succeeded + 1))
         else
-            log "Warning" "  Failed to upgrade $pkg (dependency conflict)"
-            failed="$failed $pkg"
+            if echo "$upgrade_output" | grep -qi "externally-managed-environment"; then
+                echo "$upgrade_output" | tee -a "$LOG_FILE"
+                log "Warning" "  $pkg blocked by externally-managed Python environment; retrying with --user"
+                if upgrade_output="$(pip3 install --user --upgrade "$pkg" 2>&1)"; then
+                    echo "$upgrade_output" | tee -a "$LOG_FILE"
+                    log "Success" "  Upgraded $pkg using --user"
+                    succeeded=$((succeeded + 1))
+                else
+                    echo "$upgrade_output" | tee -a "$LOG_FILE"
+                    log "Warning" "  Failed to upgrade $pkg even with --user."
+                    failed="$failed $pkg"
+                fi
+            else
+                echo "$upgrade_output" | tee -a "$LOG_FILE"
+                log "Warning" "  Failed to upgrade $pkg (dependency conflict)"
+                failed="$failed $pkg"
+            fi
         fi
     done
 
@@ -207,6 +271,26 @@ update_pip() {
     else
         PIP_STATUS="Success"
         log "Success" "pip updates completed successfully ($succeeded upgraded)"
+    fi
+}
+
+update_pipx() {
+    if ! command -v pipx >/dev/null 2>&1; then
+        log "Info" "pipx not installed. Skipping."
+        return
+    fi
+
+    log "Info" "============================================================"
+    log "Info" "STARTING PIPX UPDATES"
+    log "Info" "============================================================"
+
+    log "Info" "Running: pipx upgrade-all"
+    if pipx upgrade-all 2>&1 | tee -a "$LOG_FILE"; then
+        PIPX_STATUS="Success"
+        log "Success" "pipx upgrades completed successfully"
+    else
+        PIPX_STATUS="Warning"
+        log "Warning" "pipx upgrade-all encountered issues."
     fi
 }
 
@@ -255,9 +339,10 @@ show_summary() {
     echo "App Store: $MAS_STATUS"
     echo "NPM:       $NPM_STATUS"
     echo "PIP:       $PIP_STATUS"
+    echo "PIPX:      $PIPX_STATUS"
     echo "Rustup:    $RUSTUP_STATUS"
 
-    if [[ "$BREW_STATUS" == "Error" || "$MAS_STATUS" == "Error" || "$NPM_STATUS" == "Error" || "$PIP_STATUS" == "Error" || "$RUSTUP_STATUS" == "Error" ]]; then
+    if [[ "$BREW_STATUS" == "Error" || "$MAS_STATUS" == "Error" || "$NPM_STATUS" == "Error" || "$PIP_STATUS" == "Error" || "$PIPX_STATUS" == "Error" || "$RUSTUP_STATUS" == "Error" ]]; then
         has_errors=true
     fi
 
@@ -289,6 +374,11 @@ log "Info" "Script Directory: $SCRIPT_DIR"
 log "Info" "Log File: $LOG_FILE"
 log "Info" "============================================================"
 
+if ! launch_interactive_terminal; then
+    log "Error" "Interactive launch failed."
+    exit 1
+fi
+
 # Check for Data Saver / Low Data Mode
 if is_data_saver_active; then
     log "Warning" "Low Data Mode (Data Saver) detected. Skipping auto updates to conserve data."
@@ -307,6 +397,7 @@ update_brew
 update_mas
 update_npm
 update_pip
+update_pipx
 update_rustup
 
 # Summary
