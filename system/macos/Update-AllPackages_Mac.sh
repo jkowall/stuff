@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # SYNOPSIS
-#     Weekly package update script for Homebrew, mas, npm, pip, and rustup on macOS.
+#     Weekly package update script for Homebrew, Mac App Store, MacUpdater, npm, pipx, and rustup on macOS.
 # DESCRIPTION
-#     Updates all packages from Homebrew (formulae and casks), Mac App Store (via mas), npm global packages, pip, and rustup-managed Rust toolchains.
+#     Updates packages and apps from Homebrew, Mac App Store (via mas), MacUpdater, npm, pipx, and rustup-managed Rust toolchains.
 #     Logs all output to a timestamped file and shows desktop notifications.
 
 # ============================================================================
@@ -18,18 +18,44 @@ MACHINE_NAME="$(hostname)"
 TIMESTAMP="$(date +%Y-%m-%d_%H-%m)"
 LOG_FILE="${LOG_DIR}/${SCRIPT_NAME}_${MACHINE_NAME}_${TIMESTAMP}.log"
 INTERACTIVE_MODE=0
+PENDING_ONLY=0
+PENDING_FILE="${SCRIPT_DIR}/pending-interactive-update"
+MACUPDATER_CLIENT="/Applications/MacUpdater.app/Contents/Resources/macupdater_client"
+MACUPDATER_SCAN_TIMEOUT_SECONDS=120
+MACUPDATER_APP_TIMEOUT_SECONDS=900
 
-if [[ "${1:-}" == "--interactive" || "${1:-}" == "--interactive-run" ]]; then
-    INTERACTIVE_MODE=1
-    shift
-fi
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --interactive)
+            INTERACTIVE_MODE=1
+            shift
+            ;;
+        --interactive-run)
+            INTERACTIVE_MODE=1
+            shift
+            ;;
+        --run-pending)
+            INTERACTIVE_MODE=1
+            PENDING_ONLY=1
+            shift
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
 
 # Ensure log directory exists
 mkdir -p "$LOG_DIR"
 
+if [ "$PENDING_ONLY" -eq 1 ] && [ ! -f "$PENDING_FILE" ]; then
+    exit 0
+fi
+
 # Status tracking
 BREW_STATUS="Skipped"
 MAS_STATUS="Skipped"
+MACUPDATER_STATUS="Skipped"
 NPM_STATUS="Skipped"
 PIP_STATUS="Skipped"
 PIPX_STATUS="Skipped"
@@ -78,12 +104,29 @@ monitor.cancel()
 SWIFT
 }
 
+mark_pending_interactive_run() {
+    {
+        printf 'created_at=%s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+        printf 'script=%s\n' "$0"
+        printf 'log=%s\n' "$LOG_FILE"
+    } > "$PENDING_FILE"
+    log "Warning" "Saved pending interactive update marker: $PENDING_FILE"
+}
+
+clear_pending_interactive_run() {
+    if [ -f "$PENDING_FILE" ]; then
+        rm -f "$PENDING_FILE"
+        log "Info" "Cleared pending interactive update marker: $PENDING_FILE"
+    fi
+}
+
 launch_interactive_terminal() {
     if [ "$INTERACTIVE_MODE" -ne 1 ]; then
         return 0
     fi
 
     if [ -t 0 ] || [ -t 1 ]; then
+        clear_pending_interactive_run
         return 0
     fi
 
@@ -95,13 +138,16 @@ launch_interactive_terminal() {
     log "Info" "Interactive mode requested. Relaunching in Terminal for user interaction."
 
     if ! /usr/bin/osascript <<OSA
-tell application "Terminal"
-    activate
-    do script "${terminal_cmd}"
-end tell
+with timeout of 30 seconds
+    tell application "Terminal"
+        activate
+        do script "${terminal_cmd}"
+    end tell
+end timeout
 OSA
     then
         log "Error" "Failed to launch Terminal for interactive update run."
+        mark_pending_interactive_run
         return 1
     fi
 
@@ -111,9 +157,52 @@ OSA
 show_notification() {
     local title="$1"
     local message="$2"
-    
+
     # macOS native notification via AppleScript
-    osascript -e "display notification \"$message\" with title \"$title\""
+    osascript - "$title" "$message" <<'OSA'
+on run argv
+    display notification (item 2 of argv) with title (item 1 of argv)
+end run
+OSA
+}
+
+run_logged_with_timeout() {
+    local timeout_seconds="$1"
+    shift
+
+    local output_file
+    output_file="$(mktemp "${TMPDIR:-/tmp}/update-command-output.XXXXXX")" || {
+        log "Error" "Unable to create temporary output file for command: $*"
+        return 125
+    }
+
+    "$@" > "$output_file" 2>&1 &
+    local command_pid=$!
+    local elapsed=0
+    local wait_interval=5
+
+    while kill -0 "$command_pid" 2>/dev/null; do
+        if [ "$elapsed" -ge "$timeout_seconds" ]; then
+            log "Warning" "Command timed out after ${timeout_seconds}s: $*"
+            kill "$command_pid" 2>/dev/null || true
+            sleep 2
+            kill -9 "$command_pid" 2>/dev/null || true
+            wait "$command_pid" 2>/dev/null || true
+            cat "$output_file" | tee -a "$LOG_FILE"
+            rm -f "$output_file"
+            return 124
+        fi
+
+        sleep "$wait_interval"
+        elapsed=$((elapsed + wait_interval))
+    done
+
+    local command_status=0
+    wait "$command_pid"
+    command_status=$?
+    cat "$output_file" | tee -a "$LOG_FILE"
+    rm -f "$output_file"
+    return "$command_status"
 }
 
 update_brew() {
@@ -161,6 +250,162 @@ update_mas() {
     else
         MAS_STATUS="Warning"
         log "Warning" "mas upgrade encountered issues (or no updates available)."
+    fi
+}
+
+update_macupdater_apps() {
+    if [ ! -x "$MACUPDATER_CLIENT" ]; then
+        log "Info" "MacUpdater CLI not found. Skipping."
+        return
+    fi
+
+    log "Info" "============================================================"
+    log "Info" "STARTING MACUPDATER APP UPDATES"
+    log "Info" "============================================================"
+
+    log "Info" "Running: macupdater_client scan --outdated --quiet"
+    if run_logged_with_timeout "$MACUPDATER_SCAN_TIMEOUT_SECONDS" "$MACUPDATER_CLIENT" scan --outdated --quiet; then
+        log "Success" "MacUpdater scan completed successfully"
+    else
+        log "Warning" "MacUpdater live scan failed. Falling back to cached MacUpdater app list."
+    fi
+
+    local list_file
+    list_file="$(mktemp "${TMPDIR:-/tmp}/macupdater-list.XXXXXX")" || {
+        MACUPDATER_STATUS="Error"
+        log "Error" "Unable to create temporary file for MacUpdater app list."
+        return
+    }
+
+    if ! "$MACUPDATER_CLIENT" list --hide-uptodate-apps --hide-mas-apps --json --quiet > "$list_file" 2>>"$LOG_FILE"; then
+        MACUPDATER_STATUS="Warning"
+        log "Warning" "MacUpdater app list failed."
+        rm -f "$list_file"
+        return
+    fi
+
+    local app_count
+    app_count="$(python3 - "$list_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+apps = [
+    app for app in data.get("apps", [])
+    if app.get("outdated") and app.get("auto_updatable") and app.get("installed_path")
+]
+print(len(apps))
+PY
+)"
+
+    local manual_count
+    manual_count="$(python3 - "$list_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+apps = [
+    app for app in data.get("apps", [])
+    if app.get("outdated") and not app.get("auto_updatable") and app.get("installed_path")
+]
+print(len(apps))
+PY
+)"
+
+    if [ "$manual_count" -gt 0 ]; then
+        log "Warning" "MacUpdater found $manual_count outdated non-auto-updatable app(s) that need manual or vendor-specific updates."
+        python3 - "$list_file" <<'PY' | while IFS=$'\t' read -r app_name installed_version newest_version app_path; do
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+for app in data.get("apps", []):
+    if app.get("outdated") and not app.get("auto_updatable") and app.get("installed_path"):
+        print("\t".join([
+            app.get("name") or "",
+            app.get("installed_version") or "",
+            app.get("newest_version") or "",
+            app.get("installed_path") or "",
+        ]))
+PY
+            log "Warning" "Manual MacUpdater update remains: ${app_name} (${installed_version} -> ${newest_version}) at ${app_path}"
+        done
+    fi
+
+    if [ "$app_count" -eq 0 ]; then
+        if [ "$manual_count" -gt 0 ]; then
+            MACUPDATER_STATUS="Warning"
+            log "Warning" "MacUpdater found no auto-updatable non-MAS app updates, but manual updates remain."
+        else
+            MACUPDATER_STATUS="Success"
+            log "Success" "MacUpdater found no non-MAS app updates."
+        fi
+        rm -f "$list_file"
+        return
+    fi
+
+    log "Info" "MacUpdater found $app_count auto-updatable non-MAS app update(s)."
+    log "Info" "Running apps may be skipped by MacUpdater; they will not be force-quit by this script."
+
+    local updates_file
+    updates_file="$(mktemp "${TMPDIR:-/tmp}/macupdater-updates.XXXXXX")" || {
+        MACUPDATER_STATUS="Error"
+        log "Error" "Unable to create temporary file for MacUpdater updates."
+        rm -f "$list_file"
+        return
+    }
+
+    python3 - "$list_file" > "$updates_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+for app in data.get("apps", []):
+    if app.get("outdated") and app.get("auto_updatable") and app.get("installed_path"):
+        print("\t".join([
+            app.get("name") or "",
+            app.get("installed_version") or "",
+            app.get("newest_version") or "",
+            app.get("installed_path") or "",
+        ]))
+PY
+
+    local updated=0
+    local failed=0
+    local app_name=""
+    local installed_version=""
+    local newest_version=""
+    local app_path=""
+
+    while IFS=$'\t' read -r app_name installed_version newest_version app_path; do
+        [ -n "$app_path" ] || continue
+        log "Info" "MacUpdater updating: ${app_name} (${installed_version} -> ${newest_version}) at ${app_path}"
+
+        if run_logged_with_timeout "$MACUPDATER_APP_TIMEOUT_SECONDS" "$MACUPDATER_CLIENT" update --quiet "$app_path"; then
+            updated=$((updated + 1))
+            log "Success" "MacUpdater update completed for: ${app_name}"
+        else
+            failed=$((failed + 1))
+            log "Warning" "MacUpdater update failed or was skipped for: ${app_name}"
+        fi
+    done < "$updates_file"
+
+    rm -f "$list_file" "$updates_file"
+
+    if [ "$failed" -gt 0 ] || [ "$manual_count" -gt 0 ]; then
+        MACUPDATER_STATUS="Warning"
+        log "Warning" "MacUpdater completed with $updated updated, $failed failed/skipped, and $manual_count manual update(s) remaining."
+    else
+        MACUPDATER_STATUS="Success"
+        log "Success" "MacUpdater completed successfully ($updated updated)."
     fi
 }
 
@@ -241,13 +486,12 @@ update_rustup() {
 
     log "Info" "Checking for rustup and toolchain updates..."
     local check_output=""
-    if ! check_output=$(rustup check 2>&1 | tee -a "$LOG_FILE"); then
-        RUSTUP_STATUS="Warning"
-        log "Warning" "rustup check encountered issues."
-        return
-    fi
+    local check_status=0
+    check_output="$(rustup check 2>&1)"
+    check_status=$?
+    printf '%s\n' "$check_output" | tee -a "$LOG_FILE"
 
-    if echo "$check_output" | grep -q "Update available"; then
+    if echo "$check_output" | grep -qi "update available"; then
         log "Info" "Running: rustup update"
         if rustup update 2>&1 | tee -a "$LOG_FILE"; then
             RUSTUP_STATUS="Success"
@@ -257,6 +501,12 @@ update_rustup() {
             log "Warning" "rustup update encountered issues."
         fi
     else
+        if [ "$check_status" -ne 0 ]; then
+            RUSTUP_STATUS="Warning"
+            log "Warning" "rustup check encountered issues."
+            return
+        fi
+
         RUSTUP_STATUS="Success"
         log "Success" "Rust toolchains are already up-to-date"
     fi
@@ -269,15 +519,21 @@ show_summary() {
     log "Info" "============================================================"
 
     local has_errors=false
+    local summary_lines=(
+        "Homebrew:  $BREW_STATUS"
+        "App Store: $MAS_STATUS"
+        "MacUpdater: $MACUPDATER_STATUS"
+        "NPM:       $NPM_STATUS"
+        "PIP:       $PIP_STATUS"
+        "PIPX:      $PIPX_STATUS"
+        "Rustup:    $RUSTUP_STATUS"
+    )
+    local summary_message
 
-    echo "Homebrew:  $BREW_STATUS"
-    echo "App Store: $MAS_STATUS"
-    echo "NPM:       $NPM_STATUS"
-    echo "PIP:       $PIP_STATUS"
-    echo "PIPX:      $PIPX_STATUS"
-    echo "Rustup:    $RUSTUP_STATUS"
+    printf '%s\n' "${summary_lines[@]}" | tee -a "$LOG_FILE"
+    summary_message="$(printf '%s\n' "${summary_lines[@]}")"
 
-    if [[ "$BREW_STATUS" == "Error" || "$MAS_STATUS" == "Error" || "$NPM_STATUS" == "Error" || "$PIP_STATUS" == "Error" || "$PIPX_STATUS" == "Error" || "$RUSTUP_STATUS" == "Error" ]]; then
+    if [[ "$BREW_STATUS" == "Error" || "$MAS_STATUS" == "Error" || "$MACUPDATER_STATUS" == "Error" || "$NPM_STATUS" == "Error" || "$PIP_STATUS" == "Error" || "$PIPX_STATUS" == "Error" || "$RUSTUP_STATUS" == "Error" ]]; then
         has_errors=true
     fi
 
@@ -285,9 +541,9 @@ show_summary() {
     log "Info" "Log file saved to: $LOG_FILE"
 
     if [ "$has_errors" = true ]; then
-        show_notification "Package Updates" "Completed with Errors. Check log."
+        show_notification "Package Updates Completed with Errors" "$summary_message"
     else
-        show_notification "Package Updates" "All systems updated successfully!"
+        show_notification "Package Updates Complete" "$summary_message"
     fi
 }
 
@@ -325,11 +581,12 @@ fi
 cleanup_logs
 
 # Show start notification
-show_notification "Package Updates" "Starting updates for Homebrew, App Store, npm, pip, and rustup..."
+show_notification "Package Updates" "Starting updates for Homebrew, App Store, MacUpdater, npm, pipx, and rustup..."
 
 # Run Updates
 update_brew
 update_mas
+update_macupdater_apps
 update_npm
 update_pip
 update_pipx
