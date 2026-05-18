@@ -209,7 +209,8 @@ function Get-WingetUpgradeIds {
         [Parameter(Mandatory = $true)]
         $WingetPath,
         [Parameter(Mandatory = $true)]
-        [string]$Source
+        [string]$Source,
+        [string[]]$ExcludePackageIds = @()
     )
 
     Write-Log "Checking for remaining $Source upgrades..." -Level Info
@@ -223,11 +224,28 @@ function Get-WingetUpgradeIds {
         Write-Log $Text -Level Info
 
         $Columns = $Text -split '\s+'
-        if ($Columns.Count -lt 5) { continue }
-        if ($Columns[-1] -ne $Source) { continue }
+        if ($Columns.Count -lt 4) { continue }
 
-        $Id = $Columns[-4]
+        $Id = $null
+        if ($Columns[-1] -eq $Source -and $Columns.Count -ge 5) {
+            $Id = $Columns[-4]
+        }
+        else {
+            for ($Index = $Columns.Count - 3; $Index -ge 0; $Index--) {
+                $Candidate = $Columns[$Index]
+                if ($Candidate -match '^(?=.*[A-Za-z])(?=.*\.)[A-Za-z0-9][A-Za-z0-9_.+-]*$') {
+                    $Id = $Candidate
+                    break
+                }
+            }
+        }
+
+        if (-not $Id) { continue }
         if ($Id -eq "Id") { continue }
+        if ($ExcludePackageIds -contains $Id) {
+            Write-Log "Skipping excluded $Source package: $Id" -Level Warning
+            continue
+        }
         if (-not $Ids.Contains($Id)) {
             $Ids.Add($Id)
         }
@@ -278,41 +296,31 @@ function Update-Winget {
         $WingetPath = Get-WingetCommand
         Write-Log "Found winget at: $($WingetPath.Source)" -Level Info
 
+        # iCUE currently requires a firmware update before its package upgrade can complete.
+        $WingetExcludeIds = @("Corsair.iCUE.5")
+
         # Pin packages with broken version detection so they don't re-upgrade every run
-        $WingetPins = @("Syncthing.Syncthing")
+        $WingetPins = @("Syncthing.Syncthing", "BillStewart.SyncthingWindowsSetup")
         foreach ($Pin in $WingetPins) {
-            & $WingetPath.Source pin list | Select-String -Quiet $Pin
-            if (-not $?) {
+            $PinExists = & $WingetPath.Source pin list | Select-String -Quiet -SimpleMatch $Pin
+            if (-not $PinExists) {
                 Write-Log "Pinning $Pin (broken version detection)" -Level Info
-                & $WingetPath.Source pin add $Pin --blocking 2>&1 | Out-Null
+                & $WingetPath.Source pin add --id $Pin -e --blocking 2>&1 | Out-Null
             }
         }
 
-        # Run winget upgrade directly to preserve progress bars
-        Write-Log "Running: winget upgrade --all --source winget --include-unknown --accept-package-agreements --accept-source-agreements" -Level Info
-
-        & $WingetPath.Source upgrade --all --source winget --include-unknown --accept-package-agreements --accept-source-agreements
-        $BulkExitCode = $LASTEXITCODE
-
-        if ($BulkExitCode -eq 0 -or $BulkExitCode -eq $null) {
-            Write-Log "Winget updates completed successfully" -Level Success
-        }
-        else {
-            Write-Log "Winget completed with exit code: $BulkExitCode" -Level Warning
-        }
-
-        # winget --all can leave packages behind when they require explicit targeting.
+        # Explicit targeting lets us skip packages that need manual intervention.
         # PowerShell also commonly needs explicit handling due to MSI detection issues.
-        $ExplicitIds = @("Microsoft.PowerShell") + (Get-WingetUpgradeIds -WingetPath $WingetPath -Source "winget")
+        $ExplicitIds = Get-WingetUpgradeIds -WingetPath $WingetPath -Source "winget" -ExcludePackageIds $WingetExcludeIds
         $ExplicitResult = Invoke-WingetExplicitUpgrades -WingetPath $WingetPath -Source "winget" -PackageIds $ExplicitIds
 
-        if (($BulkExitCode -eq 0 -or $BulkExitCode -eq $null) -and $ExplicitResult.Failed.Count -eq 0) {
+        if ($ExplicitResult.Failed.Count -eq 0) {
             $script:Results.Winget.Status = "Success"
             if ($ExplicitResult.Succeeded -gt 0) {
-                $script:Results.Winget.Message = "Winget packages updated successfully ($($ExplicitResult.Succeeded) explicit checks)"
+                $script:Results.Winget.Message = "Winget packages updated successfully ($($ExplicitResult.Succeeded) explicit checks; skipped: $($WingetExcludeIds -join ', '))"
             }
             else {
-                $script:Results.Winget.Message = "Winget packages updated successfully"
+                $script:Results.Winget.Message = "Winget packages updated successfully (skipped: $($WingetExcludeIds -join ', '))"
             }
         }
         else {
@@ -321,7 +329,7 @@ function Update-Winget {
                 $script:Results.Winget.Message = "Winget completed with issues; failed explicit upgrades: $($ExplicitResult.Failed -join ', ')"
             }
             else {
-                $script:Results.Winget.Message = "Winget completed with exit code: $BulkExitCode"
+                $script:Results.Winget.Message = "Winget completed with issues"
             }
         }
     }
