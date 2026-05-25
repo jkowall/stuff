@@ -100,6 +100,7 @@ Published articles on OpenTelemetry, APM transformation, NPM, AIOps, and observa
 - When providing code snippets, follow **OpenTelemetry naming conventions**.
 - Ensure all technical explanations are compatible with **enterprise observability standards**.
 - Use consistent formatting and include comments where helpful.
+- For coding-agent work, apply [multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills) behavior: surface assumptions before implementation, prefer the simplest sufficient solution, keep diffs surgical, and define verifiable success criteria before looping on a fix.
 
 ### Document Review
 When I ask you to review a document, provide feedback in a bulleted list categorized by:

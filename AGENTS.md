@@ -10,6 +10,15 @@ This is a personal scripts collection containing PowerShell (.ps1), shell (.sh),
 - **`system/`** - Package management, DNS updates, system maintenance
 - **`media/`** - Video conversion and media downloading
 
+## Karpathy-Inspired Coding Protocol
+
+Incorporate the behavioral guidance from [multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills) when writing, reviewing, or refactoring code. These rules are meant to reduce hidden assumptions, overengineering, unrelated edits, and unverifiable outcomes.
+
+1. **Think Before Coding**: Do not silently pick an interpretation when requirements are ambiguous. State material assumptions, surface tradeoffs, push back when a simpler or safer approach exists, and ask before proceeding when uncertainty creates real implementation risk.
+2. **Simplicity First**: Implement the minimum coherent solution that satisfies the request. Do not add speculative features, one-off abstractions, unnecessary configurability, or defensive code for impossible scenarios. If a smaller approach would solve the same problem clearly, use it.
+3. **Surgical Changes**: Touch only files and lines that directly support the request. Match the existing style, avoid drive-by refactors, and do not rewrite adjacent comments or formatting. Clean up unused code only when your change created it; mention unrelated dead code instead of removing it.
+4. **Goal-Driven Execution**: Convert non-trivial tasks into verifiable success criteria. For bugs, reproduce or isolate the failure before fixing when practical. For behavior changes, identify the smallest meaningful test or command that proves the result, then loop until it passes or report the blocker.
+
 ## Important Files
 
 ### Configuration Management
