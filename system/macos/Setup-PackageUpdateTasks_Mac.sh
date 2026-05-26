@@ -38,6 +38,8 @@ Usage: $(basename "$0") [--remove]
 
 Installs or removes a weekly launchd job for Update-AllPackages_Mac.sh.
 Reinstalling replaces any existing job with the same label.
+The updater is cached under ~/Library/Application Scripts at install time so
+launchd does not need runtime access to OneDrive/CloudStorage paths.
 Use --interactive to open an interactive Terminal session when triggered by launchd
 so you can enter sudo/app-specific passwords if required.
 When interactive Terminal launch fails, a retry job is installed to run the
@@ -93,21 +95,12 @@ install_runner() {
 
 set -euo pipefail
 
-SOURCE_SCRIPT="${UPDATE_SCRIPT}"
 CACHED_SCRIPT="${CACHED_UPDATE_SCRIPT}"
 LOG_PATH="${LAUNCHD_LOG}"
 PENDING_FILE="${PENDING_FILE}"
 
 if [ "\${1:-}" = "--run-pending" ] && [ ! -f "\$PENDING_FILE" ]; then
     exit 0
-fi
-
-if [ -r "\$SOURCE_SCRIPT" ]; then
-    if ! /usr/bin/install -m 755 "\$SOURCE_SCRIPT" "\$CACHED_SCRIPT" >> "\$LOG_PATH" 2>&1; then
-        echo "Warning: failed to refresh cached updater from \$SOURCE_SCRIPT. Running existing cached copy." >> "\$LOG_PATH"
-    fi
-else
-    echo "Warning: source updater is not readable: \$SOURCE_SCRIPT. Running existing cached copy." >> "\$LOG_PATH"
 fi
 
 if [ ! -x "\$CACHED_SCRIPT" ]; then
@@ -200,8 +193,8 @@ EOF
     write_status "Info" "Plist: ${PLIST_PATH}"
     write_status "Info" "Pending retry plist: ${PENDING_PLIST_PATH}"
     write_status "Info" "Runner: ${RUNNER_PATH}"
-    write_status "Info" "Source script: ${UPDATE_SCRIPT}"
-    write_status "Info" "Cached script: ${CACHED_UPDATE_SCRIPT}"
+    write_status "Info" "Source script cached from: ${UPDATE_SCRIPT}"
+    write_status "Info" "Launchd executes cached script: ${CACHED_UPDATE_SCRIPT}"
     write_status "Info" "Pending marker: ${PENDING_FILE}"
 }
 
