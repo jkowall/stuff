@@ -1,14 +1,11 @@
 # Backup Scripts
 
-This directory contains the backup and sync tooling for IDE, LLM, and Plex data.
+This directory contains the backup and sync tooling for LLM and Plex data.
 
 ## Scripts
 
 | Script | Purpose |
 |--------|---------|
-| `Antigravity_Sync_Win.ps1` | Windows Antigravity backup and restore with WSL-aware support |
-| `Antigravity_Sync_Linux.sh` | Linux Antigravity backup and restore |
-| `Antigravity_Sync_Mac.sh` | macOS Antigravity backup and restore |
 | `LLM_Sync_Win.ps1` | Windows backup, restore, audit, and shared-skill mirror for Codex, Gemini, Claude, and Agents |
 | `LLM_Sync_Linux.sh` | Linux backup, restore, audit, and shared-skill mirror for Codex, Gemini, Claude, and Agents |
 | `LLM_Sync_Mac.sh` | macOS backup, restore, audit, and shared-skill mirror for Codex, Gemini, Claude, and Agents |

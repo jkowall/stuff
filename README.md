@@ -15,21 +15,7 @@ A collection of PowerShell and shell scripts for system automation, backup, and 
 
 ### Backup & Sync
 
-Antigravity Sync scripts provide a unified way to manage your IDE configuration across Windows, macOS, and Linux.
-
-**Key Features:**
-
-- **Cross-Platform Parity**: Identical feature set across all supported operating systems.
-- **Versioned Backups**: Use the `-v` (Mac/Linux) or `-Versioned` (Windows) flag to create timestamped snapshots instead of overwriting the default local backup.
-- **Automated Pruning**: Automatically offers to delete versioned backups older than 30 days to save space.
-- **Safety First**:
-  - **Pre-restore Backups**: Every restore operation automatically creates a "safety" backup of your current local state before applying changes.
-  - **Settings Diff Preview**: Displays differences between your local `settings.json` and the backup, allowing you to preview changes before they are applied.
-- **Lean Sync (Whitelisting)**: Instead of excluding junk, the scripts use a strict whitelist for the `.gemini` directory. Only essential configuration (settings, MCP configs, user profiles) is synced, avoiding bloat from machine-specific AI indices (150MB+).
-- **Extension Reconciliation**: Compares locally installed extensions with the backup and warns you if you have local extensions that aren't backed up.
-- **Git Integration**: Optional prompt to pull latest changes from Git before sync and push updates after backup.
-
-LLM Sync scripts provide a separate cross-platform backup, restore, and skill mirror flow for assistant home directories and a shared `~/.skills` folder.
+LLM Sync scripts provide a cross-platform backup, restore, and skill mirror flow for assistant home directories and a shared `~/.skills` folder.
 
 **Key Features:**
 
@@ -42,9 +28,6 @@ LLM Sync scripts provide a separate cross-platform backup, restore, and skill mi
 
 | Script | Description |
 |--------|-------------|
-| [`Antigravity_Sync_Win.ps1`](backup/Antigravity_Sync_Win.ps1) | Primary sync tool for Windows. Supports WSL environments and integrated Git sync. |
-| [`Antigravity_Sync_Mac.sh`](backup/Antigravity_Sync_Mac.sh) | macOS implementation with feature parity and Git sync. |
-| [`Antigravity_Sync_Linux.sh`](backup/Antigravity_Sync_Linux.sh) | Linux implementation with feature parity and Git sync. |
 | [`LLM_Sync_Win.ps1`](backup/LLM_Sync_Win.ps1) | Windows backup and restore for portable Codex, Gemini, Claude, Agents, and shared `.skills` settings. Gemini restore skips volatile Antigravity state. |
 | [`LLM_Sync_Mac.sh`](backup/LLM_Sync_Mac.sh) | macOS backup and restore for portable Codex, Gemini, Claude, Agents, and shared `.skills` settings. Gemini restore skips volatile Antigravity state. |
 | [`LLM_Sync_Linux.sh`](backup/LLM_Sync_Linux.sh) | Linux backup and restore for portable Codex, Gemini, Claude, Agents, and shared `.skills` settings. Gemini restore skips volatile Antigravity state. |
@@ -105,9 +88,6 @@ Scripts that require personal configuration now use external JSON config files s
 | Config File | Required By | Keys |
 |-------------|-------------|------|
 | `Update-CloudflareDNS.json` | `Update-CloudflareDNS.ps1` | `ApiToken`, `ZoneId`, `DnsRecordName`, `TtlValue` |
-| `Antigravity_Sync_Win.json` | `Antigravity_Sync_Win.ps1` | `BaseBackupPath`, `PreRestorePath` (optional) |
-| `Antigravity_Sync_Mac.json` | `Antigravity_Sync_Mac.sh` | `DefaultBackupPath`, `PreRestorePath` (optional) |
-| `Antigravity_Sync_Linux.json` | `Antigravity_Sync_Linux.sh` | `DefaultBackupPath`, `PreRestorePath` (optional) |
 | `LLM_Sync_Win.json` | `LLM_Sync_Win.ps1` | `BaseBackupPath`, `PreRestorePath` (optional) |
 | `LLM_Sync_Mac.json` | `LLM_Sync_Mac.sh` | `DefaultBackupPath`, `PreRestorePath` (optional) |
 | `LLM_Sync_Linux.json` | `LLM_Sync_Linux.sh` | `DefaultBackupPath`, `PreRestorePath` (optional) |
@@ -235,7 +215,6 @@ On macOS and Linux, the backup folder now defaults to the short host name withou
 ## Prerequisites
 
 - **PowerShell 5.1+** (Windows scripts)
-- **Antigravity CLI** - Required for sync scripts
 - **FFmpeg** - Required for media conversion scripts
 - **yt-dlp** - Required for `download.ps1`
 - **scdl** - Required for SoundCloud downloads in `download.ps1`
