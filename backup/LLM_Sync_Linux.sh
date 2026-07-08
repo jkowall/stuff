@@ -27,11 +27,12 @@ resolve_machine_name() {
 VERSIONED=false
 DRY_RUN=false
 CONFLICT_POLICY="interactive"
+DESTRUCTIVE_MIGRATE=false
 ACTION=""
 MACHINE_NAME=""
 for arg in "$@"; do
     case "$arg" in
-        backup|restore|audit|migrate-skills)
+        backup|restore|audit|sync-skills|migrate-skills)
             ACTION="$arg"
             ;;
         -v|--versioned)
@@ -42,6 +43,9 @@ for arg in "$@"; do
             ;;
         --conflict-policy=*)
             CONFLICT_POLICY="${arg#*=}"
+            ;;
+        --destructive-migrate)
+            DESTRUCTIVE_MIGRATE=true
             ;;
         --machine-name=*)
             MACHINE_NAME="${arg#*=}"
@@ -60,10 +64,23 @@ run_cmd() {
     fi
 }
 
+confirm() {
+    local prompt=$1
+    local response=""
+    if [[ "$DRY_RUN" == "true" && ! -t 0 ]]; then
+        echo "$prompt (y/n): n"
+        return 1
+    fi
+
+    echo -n "$prompt (y/n): "
+    read -r response
+    [[ "$response" == [yY]* ]]
+}
+
 remove_tree() {
-    local path=$1
-    if [[ -e "$path" ]]; then
-        run_cmd rm -rf "$path"
+    local target_path=$1
+    if [[ -e "$target_path" ]]; then
+        run_cmd rm -rf "$target_path"
     fi
 }
 
@@ -141,10 +158,41 @@ sync_dir_mirror() {
         exclude_args+=(--exclude "$pattern")
     done
     if [[ "$DRY_RUN" == "true" ]]; then
-        echo "[dry-run] rsync -a --delete ${exclude_args[*]} \"$source_dir/\" \"$destination_dir/\""
+        echo "[dry-run] rsync -a --checksum --delete ${exclude_args[*]} \"$source_dir/\" \"$destination_dir/\""
     else
-        rsync -a --delete "${exclude_args[@]}" "$source_dir"/ "$destination_dir"/
+        rsync -a --checksum --delete "${exclude_args[@]}" "$source_dir"/ "$destination_dir"/
     fi
+}
+
+copy_top_level_item() {
+    local source_path=$1
+    local destination_path=$2
+
+    [[ -e "$source_path" ]] || return 0
+    run_cmd mkdir -p "$(dirname "$destination_path")"
+    if [[ -d "$source_path" ]]; then
+        sync_dir_mirror "$source_path" "$destination_path" ".git/"
+    else
+        run_cmd cp "$source_path" "$destination_path"
+    fi
+}
+
+find_assistant_skill_items() {
+    local skill_root=$1
+    [[ -d "$skill_root" ]] || return 0
+    find "$skill_root" -mindepth 1 -maxdepth 1 \
+        ! -name ".git" \
+        ! -name ".system" \
+        ! -name "_migrated_to_shared" \
+        ! -name ".conflicts" | sort
+}
+
+find_shared_skill_items() {
+    [[ -d "$HOME/.skills" ]] || return 0
+    find "$HOME/.skills" -mindepth 1 -maxdepth 1 \
+        ! -name ".git" \
+        ! -name ".conflicts" \
+        ! -name "_migrated_to_shared" | sort
 }
 
 backup_codex() {
@@ -155,7 +203,7 @@ backup_codex() {
     copy_file_if_exists "$HOME/.codex" "config.toml" "$root"
     sync_dir_mirror "$HOME/.codex/memories" "$root/memories"
     sync_dir_mirror "$HOME/.codex/rules" "$root/rules"
-    sync_dir_mirror "$HOME/.codex/skills" "$root/skills" ".system/"
+    sync_dir_mirror "$HOME/.codex/skills" "$root/skills" ".system/" ".git/" ".conflicts/" "_migrated_to_shared/"
 }
 
 backup_gemini() {
@@ -164,12 +212,15 @@ backup_gemini() {
     run_cmd mkdir -p "$root"
     copy_file_if_exists "$HOME/.gemini" "GEMINI.md" "$root"
     copy_file_if_exists "$HOME/.gemini" "settings.json" "$root"
-    copy_file_if_exists "$HOME/.gemini" "antigravity/mcp_config.json" "$root"
-    copy_file_if_exists "$HOME/.gemini" "antigravity/user_settings.pb" "$root"
-    copy_file_if_exists "$HOME/.gemini" "antigravity/browserAllowlist.txt" "$root"
-    copy_file_if_exists "$HOME/.gemini" "antigravity/browserOnboardingStatus.txt" "$root"
-    sync_dir_mirror "$HOME/.gemini/antigravity/knowledge" "$root/antigravity/knowledge"
-    sync_dir_mirror "$HOME/.gemini/antigravity/scratch" "$root/antigravity/scratch"
+    copy_file_if_exists "$HOME/.gemini" "config/mcp_config.json" "$root"
+    for antigravity_dir in antigravity antigravity-ide; do
+        copy_file_if_exists "$HOME/.gemini" "$antigravity_dir/mcp_config.json" "$root"
+        copy_file_if_exists "$HOME/.gemini" "$antigravity_dir/user_settings.pb" "$root"
+        copy_file_if_exists "$HOME/.gemini" "$antigravity_dir/browserAllowlist.txt" "$root"
+        copy_file_if_exists "$HOME/.gemini" "$antigravity_dir/browserOnboardingStatus.txt" "$root"
+        sync_dir_mirror "$HOME/.gemini/$antigravity_dir/knowledge" "$root/$antigravity_dir/knowledge"
+        sync_dir_mirror "$HOME/.gemini/$antigravity_dir/scratch" "$root/$antigravity_dir/scratch"
+    done
 }
 
 backup_claude() {
@@ -178,14 +229,14 @@ backup_claude() {
     run_cmd mkdir -p "$root"
     copy_file_if_exists "$HOME/.claude" "settings.json" "$root"
     copy_file_if_exists "$HOME/.claude" "statusline-command.sh" "$root"
-    sync_dir_mirror "$HOME/.claude/skills" "$root/skills" ".git/"
+    sync_dir_mirror "$HOME/.claude/skills" "$root/skills" ".git/" ".conflicts/" "_migrated_to_shared/"
 }
 
 backup_agents() {
     local root=$1/agents
     remove_tree "$root"
     run_cmd mkdir -p "$root"
-    sync_dir_mirror "$HOME/.agents/skills" "$root/skills" ".git/"
+    sync_dir_mirror "$HOME/.agents/skills" "$root/skills" ".git/" ".conflicts/" "_migrated_to_shared/"
 }
 
 backup_shared_skills() {
@@ -193,7 +244,27 @@ backup_shared_skills() {
     [[ -d "$HOME/.skills" ]] || return 0
     remove_tree "$root"
     run_cmd mkdir -p "$root"
-    sync_dir_mirror "$HOME/.skills" "$root" ".git/"
+    sync_dir_mirror "$HOME/.skills" "$root" ".git/" ".conflicts/" "_migrated_to_shared/"
+}
+
+backup_portable_app_configs() {
+    local root=$1/app-configs
+    remove_tree "$root"
+    run_cmd mkdir -p "$root"
+
+    local config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+    local claude_app="$config_home/Claude"
+    copy_file_if_exists "$claude_app" "claude_desktop_config.json" "$root/claude"
+    copy_file_if_exists "$claude_app" "extensions-installations.json" "$root/claude"
+    copy_file_if_exists "$claude_app" "extensions-blocklist.json" "$root/claude"
+    copy_file_if_exists "$claude_app" "cowork-enabled-cli-ops.json" "$root/claude"
+    sync_dir_mirror "$claude_app/Claude Extensions Settings" "$root/claude/Claude Extensions Settings"
+
+    local codex_app="$config_home/Codex"
+    copy_file_if_exists "$codex_app" "browser-sidebar-local-servers.json" "$root/codex"
+
+    local openai_codex_app="$config_home/OpenAI/Codex"
+    copy_file_if_exists "$openai_codex_app" "chrome-native-hosts-v2.json" "$root/openai-codex"
 }
 
 backup_all() {
@@ -209,16 +280,18 @@ backup_all() {
     backup_agents "$root"
     echo "Backing up shared skills..."
     backup_shared_skills "$root"
+    echo "Backing up portable app config..."
+    backup_portable_app_configs "$root"
 }
 
 path_signature() {
-    local path=$1
-    [[ -e "$path" ]] || return 0
-    if [[ -f "$path" ]]; then
-        sha256sum "$path" | awk '{print "FILE:" $1}'
+    local target_path=$1
+    [[ -e "$target_path" ]] || return 0
+    if [[ -f "$target_path" ]]; then
+        sha256sum "$target_path" | awk '{print "FILE:" $1}'
         return 0
     fi
-    find "$path" -type f -print0 | sort -z | xargs -0 sha256sum | sed "s|$path/||" | tr '\n' '|'
+    find "$target_path" -type f -print0 | sort -z | xargs -0 sha256sum | sed "s|$target_path/||" | tr '\n' '|'
 }
 
 archive_skill_item() {
@@ -271,12 +344,50 @@ resolve_skill_conflict() {
     echo "Kept shared skill: $(basename "$local_path")"
 }
 
+resolve_sync_skill_conflict() {
+    local assistant_name=$1
+    local local_path=$2
+    local shared_path=$3
+    local decision="$CONFLICT_POLICY"
+    local skill_name
+    skill_name=$(basename "$local_path")
+
+    if [[ "$decision" == "interactive" ]]; then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            echo "[dry-run] skill conflict for $assistant_name:$skill_name; would prompt, default preview keeps shared"
+            decision="prefer-shared"
+        else
+            echo "Skill conflict for $assistant_name:$skill_name"
+            echo -n "Choose local or shared? (l/s): "
+            read -n 1 -r choice
+            echo
+            if [[ "$choice" == "l" || "$choice" == "L" ]]; then
+                decision="prefer-local"
+            else
+                decision="prefer-shared"
+            fi
+        fi
+    fi
+
+    local timestamp
+    timestamp=$(date +%Y%m%d_%H%M%S)
+    if [[ "$decision" == "prefer-local" ]]; then
+        copy_top_level_item "$shared_path" "$HOME/.skills/.conflicts/$assistant_name/$timestamp/$skill_name"
+        copy_top_level_item "$local_path" "$shared_path"
+        echo "Updated shared skill from $assistant_name: $skill_name"
+        return
+    fi
+
+    copy_top_level_item "$local_path" "$HOME/.skills/.conflicts/$assistant_name/$timestamp/$skill_name"
+    echo "Kept shared skill and preserved conflicting local copy: $skill_name"
+}
+
 audit_skills() {
     ensure_shared_skills_dir
     echo "=== Shared Skills Audit ==="
     local shared_count=0
     if [[ -d "$HOME/.skills" ]]; then
-        shared_count=$(find "$HOME/.skills" -mindepth 1 -maxdepth 1 ! -name ".git" | wc -l)
+        shared_count=$(find_shared_skill_items | wc -l | awk '{print $1}')
     fi
     echo "Shared skills root: $HOME/.skills"
     echo "Shared skills: $shared_count"
@@ -289,36 +400,78 @@ audit_skills() {
         fi
 
         local local_count
-        local_count=$(find "$skill_root" -mindepth 1 -maxdepth 1 ! -name ".git" ! -name ".system" | wc -l)
+        local_count=$(find_assistant_skill_items "$skill_root" | wc -l | awk '{print $1}')
         echo "[$assistant] local skills: $local_count"
         while IFS= read -r item; do
-            local name
-            name=$(basename "$item")
-            if [[ -e "$HOME/.skills/$name" ]]; then
-                echo "  - duplicate: $name"
+            local skill_name
+            skill_name=$(basename "$item")
+            if [[ -e "$HOME/.skills/$skill_name" ]]; then
+                echo "  - duplicate: $skill_name"
             fi
-        done < <(find "$skill_root" -mindepth 1 -maxdepth 1 ! -name ".git" ! -name ".system")
+        done < <(find_assistant_skill_items "$skill_root")
     done
 }
 
-migrate_skills() {
+sync_skills() {
+    ensure_shared_skills_dir
+    for assistant in codex claude; do
+        local skill_root="$HOME/.${assistant}/skills"
+        [[ -d "$skill_root" ]] || continue
+        echo "Syncing skills from $assistant into shared set..."
+        while IFS= read -r item; do
+            local skill_name
+            skill_name=$(basename "$item")
+            local shared_path="$HOME/.skills/$skill_name"
+            if [[ ! -e "$shared_path" ]]; then
+                copy_top_level_item "$item" "$shared_path"
+                echo "Added shared skill from $assistant: $skill_name"
+                continue
+            fi
+
+            local local_sig
+            local shared_sig
+            local_sig=$(path_signature "$item")
+            shared_sig=$(path_signature "$shared_path")
+            if [[ "$local_sig" != "$shared_sig" ]]; then
+                resolve_sync_skill_conflict "$assistant" "$item" "$shared_path"
+            fi
+        done < <(find_assistant_skill_items "$skill_root")
+    done
+
+    for assistant in codex claude; do
+        local skill_root="$HOME/.${assistant}/skills"
+        run_cmd mkdir -p "$skill_root"
+        echo "Mirroring shared skills into $assistant..."
+        while IFS= read -r item; do
+            local skill_name
+            skill_name=$(basename "$item")
+            local destination="$skill_root/$skill_name"
+            if [[ ! -e "$destination" || "$(path_signature "$item")" != "$(path_signature "$destination")" ]]; then
+                copy_top_level_item "$item" "$destination"
+                echo "Mirrored shared skill to $assistant: $skill_name"
+            fi
+        done < <(find_shared_skill_items)
+    done
+}
+
+destructive_migrate_skills() {
     ensure_shared_skills_dir
     for assistant in codex claude; do
         local skill_root="$HOME/.${assistant}/skills"
         [[ -d "$skill_root" ]] || continue
         echo "Migrating skills from $assistant..."
         while IFS= read -r item; do
-            local name
-            name=$(basename "$item")
-            local shared_path="$HOME/.skills/$name"
+            local skill_name
+            skill_name=$(basename "$item")
+            local shared_path="$HOME/.skills/$skill_name"
             if [[ ! -e "$shared_path" ]]; then
                 if [[ -d "$item" ]]; then
                     sync_dir_mirror "$item" "$shared_path" ".git/"
                 else
-                    copy_file_if_exists "$(dirname "$item")" "$name" "$HOME/.skills"
+                    copy_file_if_exists "$(dirname "$item")" "$skill_name" "$HOME/.skills"
                 fi
                 archive_skill_item "$item" "$skill_root/_migrated_to_shared/$(date +%Y%m%d_%H%M%S)"
-                echo "Promoted to shared: $name"
+                echo "Promoted to shared: $skill_name"
                 continue
             fi
 
@@ -328,12 +481,12 @@ migrate_skills() {
             shared_sig=$(path_signature "$shared_path")
             if [[ "$local_sig" == "$shared_sig" ]]; then
                 archive_skill_item "$item" "$skill_root/_migrated_to_shared/$(date +%Y%m%d_%H%M%S)"
-                echo "Archived duplicate local skill: $name"
+                echo "Archived duplicate local skill: $skill_name"
                 continue
             fi
 
             resolve_skill_conflict "$assistant" "$item" "$shared_path"
-        done < <(find "$skill_root" -mindepth 1 -maxdepth 1 ! -name ".git" ! -name ".system")
+        done < <(find_assistant_skill_items "$skill_root")
     done
 }
 
@@ -351,16 +504,15 @@ preview_diff_if_changed() {
 
 preview_restore_diffs() {
     local root=$1
-    echo -n "Preview text diffs before restore? (y/n): "
-    read -n 1 -r preview_choice
-    echo
-    [[ $preview_choice == "y" || $preview_choice == "Y" ]] || return 0
+    confirm "Preview text diffs before restore" || return 0
 
     preview_diff_if_changed "$HOME/.codex/AGENTS.md" "$root/codex/AGENTS.md" "codex/AGENTS.md"
     preview_diff_if_changed "$HOME/.codex/config.toml" "$root/codex/config.toml" "codex/config.toml"
     preview_diff_if_changed "$HOME/.gemini/GEMINI.md" "$root/gemini/GEMINI.md" "gemini/GEMINI.md"
     preview_diff_if_changed "$HOME/.gemini/settings.json" "$root/gemini/settings.json" "gemini/settings.json"
+    preview_diff_if_changed "$HOME/.gemini/config/mcp_config.json" "$root/gemini/config/mcp_config.json" "gemini/config/mcp_config.json"
     preview_diff_if_changed "$HOME/.gemini/antigravity/mcp_config.json" "$root/gemini/antigravity/mcp_config.json" "gemini/antigravity/mcp_config.json"
+    preview_diff_if_changed "$HOME/.gemini/antigravity-ide/mcp_config.json" "$root/gemini/antigravity-ide/mcp_config.json" "gemini/antigravity-ide/mcp_config.json"
     preview_diff_if_changed "$HOME/.claude/settings.json" "$root/claude/settings.json" "claude/settings.json"
     preview_diff_if_changed "$HOME/.claude/statusline-command.sh" "$root/claude/statusline-command.sh" "claude/statusline-command.sh"
 }
@@ -373,7 +525,7 @@ restore_codex() {
     copy_file_if_exists "$root" "config.toml" "$HOME/.codex"
     sync_dir_mirror "$root/memories" "$HOME/.codex/memories"
     sync_dir_mirror "$root/rules" "$HOME/.codex/rules"
-    sync_dir_mirror "$root/skills" "$HOME/.codex/skills" ".system/"
+    sync_dir_mirror "$root/skills" "$HOME/.codex/skills" ".system/" ".git/" ".conflicts/" "_migrated_to_shared/"
 }
 
 restore_gemini() {
@@ -382,9 +534,12 @@ restore_gemini() {
     run_cmd mkdir -p "$HOME/.gemini"
     copy_file_if_exists "$root" "GEMINI.md" "$HOME/.gemini"
     copy_file_if_exists "$root" "settings.json" "$HOME/.gemini"
-    copy_file_if_exists "$root" "antigravity/mcp_config.json" "$HOME/.gemini"
-    copy_file_if_exists "$root" "antigravity/user_settings.pb" "$HOME/.gemini"
-    copy_file_if_exists "$root" "antigravity/browserAllowlist.txt" "$HOME/.gemini"
+    copy_file_if_exists "$root" "config/mcp_config.json" "$HOME/.gemini"
+    for antigravity_dir in antigravity antigravity-ide; do
+        copy_file_if_exists "$root" "$antigravity_dir/mcp_config.json" "$HOME/.gemini"
+        copy_file_if_exists "$root" "$antigravity_dir/user_settings.pb" "$HOME/.gemini"
+        copy_file_if_exists "$root" "$antigravity_dir/browserAllowlist.txt" "$HOME/.gemini"
+    done
 }
 
 restore_claude() {
@@ -394,21 +549,43 @@ restore_claude() {
     copy_file_if_exists "$root" "settings.json" "$HOME/.claude"
     copy_file_if_exists "$root" "statusline-command.sh" "$HOME/.claude"
     [[ -f "$HOME/.claude/statusline-command.sh" ]] && run_cmd chmod +x "$HOME/.claude/statusline-command.sh"
-    sync_dir_mirror "$root/skills" "$HOME/.claude/skills" ".git/"
+    sync_dir_mirror "$root/skills" "$HOME/.claude/skills" ".git/" ".conflicts/" "_migrated_to_shared/"
 }
 
 restore_agents() {
     local root=$1/agents
     [[ -d "$root" ]] || return 0
     run_cmd mkdir -p "$HOME/.agents"
-    sync_dir_mirror "$root/skills" "$HOME/.agents/skills" ".git/"
+    sync_dir_mirror "$root/skills" "$HOME/.agents/skills" ".git/" ".conflicts/" "_migrated_to_shared/"
 }
 
 restore_shared_skills() {
     local root=$1/shared-skills
     [[ -d "$root" ]] || return 0
     run_cmd mkdir -p "$HOME/.skills"
-    sync_dir_mirror "$root" "$HOME/.skills" ".git/"
+    sync_dir_mirror "$root" "$HOME/.skills" ".git/" ".conflicts/" "_migrated_to_shared/"
+}
+
+restore_portable_app_configs() {
+    local root=$1/app-configs
+    [[ -d "$root" ]] || return 0
+
+    local config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+    local claude_app="$config_home/Claude"
+    run_cmd mkdir -p "$claude_app"
+    copy_file_if_exists "$root/claude" "claude_desktop_config.json" "$claude_app"
+    copy_file_if_exists "$root/claude" "extensions-installations.json" "$claude_app"
+    copy_file_if_exists "$root/claude" "extensions-blocklist.json" "$claude_app"
+    copy_file_if_exists "$root/claude" "cowork-enabled-cli-ops.json" "$claude_app"
+    sync_dir_mirror "$root/claude/Claude Extensions Settings" "$claude_app/Claude Extensions Settings"
+
+    local codex_app="$config_home/Codex"
+    run_cmd mkdir -p "$codex_app"
+    copy_file_if_exists "$root/codex" "browser-sidebar-local-servers.json" "$codex_app"
+
+    local openai_codex_app="$config_home/OpenAI/Codex"
+    run_cmd mkdir -p "$openai_codex_app"
+    copy_file_if_exists "$root/openai-codex" "chrome-native-hosts-v2.json" "$openai_codex_app"
 }
 
 create_safety_backup() {
@@ -475,12 +652,13 @@ git_sync_push() {
 }
 
 if [[ -z "$ACTION" ]]; then
-    show_menu "Select Action" "Backup" "Restore" "Audit" "Migrate-Skills"
+    show_menu "Select Action" "Backup" "Restore" "Audit" "Sync-Skills" "Migrate-Skills"
     choice_idx=$?
     case "$choice_idx" in
         0) ACTION="backup" ;;
         1) ACTION="restore" ;;
         2) ACTION="audit" ;;
+        3) ACTION="sync-skills" ;;
         *) ACTION="migrate-skills" ;;
     esac
 fi
@@ -496,15 +674,22 @@ if [[ "$ACTION" == "audit" ]]; then
     exit 0
 fi
 
-if [[ "$ACTION" == "migrate-skills" ]]; then
-    migrate_skills
+if [[ "$ACTION" == "sync-skills" ]]; then
+    sync_skills
     exit 0
 fi
 
-echo -n "Pull latest settings from Git? (y/n): "
-read -n 1 -r pull_choice
-echo
-if [[ $pull_choice == "y" || $pull_choice == "Y" ]]; then
+if [[ "$ACTION" == "migrate-skills" ]]; then
+    if [[ "$DESTRUCTIVE_MIGRATE" == "true" ]]; then
+        destructive_migrate_skills
+    else
+        echo "migrate-skills now aliases safe sync-skills. Use --destructive-migrate to archive/remove local copies."
+        sync_skills
+    fi
+    exit 0
+fi
+
+if confirm "Pull latest settings from Git"; then
     git_sync_pull
 fi
 
@@ -514,16 +699,17 @@ if [[ "$ACTION" == "backup" && "$VERSIONED" == "true" ]]; then
 fi
 
 if [[ "$ACTION" == "backup" ]]; then
-    echo "Enter the full path (default: $BACKUP_DIR):"
-    read input_dir
-    BACKUP_DIR="${input_dir:-$BACKUP_DIR}"
+    if [[ "$DRY_RUN" == "true" && ! -t 0 ]]; then
+        echo "Using default backup path: $BACKUP_DIR"
+    else
+        echo "Enter the full path (default: $BACKUP_DIR):"
+        read input_dir
+        BACKUP_DIR="${input_dir:-$BACKUP_DIR}"
+    fi
     backup_all "$BACKUP_DIR"
     echo "Backup complete."
 
-    echo -n "Push backup changes to Git? (y/n): "
-    read -n 1 -r push_choice
-    echo
-    if [[ $push_choice == "y" || $push_choice == "Y" ]]; then
+    if confirm "Push backup changes to Git"; then
         git_sync_push "$BACKUP_DIR"
     fi
 
@@ -531,10 +717,7 @@ if [[ "$ACTION" == "backup" ]]; then
         OLD_BACKUPS=$(find "$BASE_BACKUP_DIR" -maxdepth 1 -type d -name "${HOSTNAME}_*" -mtime +30)
         if [[ -n "$OLD_BACKUPS" ]]; then
             echo "Old versioned backups found."
-            echo -n "Prune old backups? (y/n): "
-            read -n 1 -r prune_choice
-            echo
-            if [[ $prune_choice == "y" || $prune_choice == "Y" ]]; then
+            if confirm "Prune old backups"; then
                 if [[ "$DRY_RUN" == "true" ]]; then
                     echo "$OLD_BACKUPS" | while IFS= read -r old_backup; do
                         [[ -n "$old_backup" ]] && echo "[dry-run] rm -rf \"$old_backup\""
@@ -576,5 +759,7 @@ else
     restore_agents "$BACKUP_DIR"
     echo "Restoring shared skills..."
     restore_shared_skills "$BACKUP_DIR"
+    echo "Restoring portable app config..."
+    restore_portable_app_configs "$BACKUP_DIR"
     echo "Restore complete."
 fi

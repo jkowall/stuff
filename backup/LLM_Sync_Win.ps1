@@ -12,7 +12,7 @@
     caches, logs, local databases, and machine-specific project state.
 
 .PARAMETER Action
-    'backup', 'restore', 'audit', or 'migrate-skills'
+    'backup', 'restore', 'audit', 'sync-skills', or 'migrate-skills'
 
 .PARAMETER Versioned
     Creates a timestamped machine backup folder for backup operations.
@@ -27,14 +27,19 @@
     Shows what would change without writing files or running Git mutations.
 
 .PARAMETER ConflictPolicy
-    Controls how `migrate-skills` handles shared-skill conflicts:
+    Controls how skill sync handles shared-skill conflicts:
     'interactive', 'prefer-local', or 'prefer-shared'
+
+.PARAMETER DestructiveMigrate
+    Allows the legacy migrate-skills behavior that archives and removes
+    assistant-local copies. Without this switch, migrate-skills safely aliases
+    sync-skills.
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true)]
 param (
     [Parameter(Mandatory = $false, Position = 0)]
-    [ValidateSet("backup", "restore", "audit", "migrate-skills")]
+    [ValidateSet("backup", "restore", "audit", "sync-skills", "migrate-skills")]
     [string]$Action,
 
     [Parameter()]
@@ -51,7 +56,10 @@ param (
 
     [Parameter()]
     [ValidateSet("interactive", "prefer-local", "prefer-shared")]
-    [string]$ConflictPolicy = "interactive"
+    [string]$ConflictPolicy = "interactive",
+
+    [Parameter()]
+    [switch]$DestructiveMigrate
 )
 
 if (-not $LogFile) {
@@ -73,7 +81,7 @@ $Script:IsDryRun = [bool]($DryRun -or $WhatIfPreference)
 $Script:SharedSkills = @{
     Name         = "shared-skills"
     Source       = Join-Path $env:USERPROFILE ".skills"
-    ExcludeNames = @(".git")
+    ExcludeNames = @(".git", ".conflicts", "_migrated_to_shared")
 }
 
 $Script:Assistants = @(
@@ -85,7 +93,7 @@ $Script:Assistants = @(
         Directories  = @(
             @{ RelativePath = "memories"; ExcludeNames = @() },
             @{ RelativePath = "rules"; ExcludeNames = @() },
-            @{ RelativePath = "skills"; ExcludeNames = @(".system") }
+            @{ RelativePath = "skills"; ExcludeNames = @(".system", ".git", ".conflicts", "_migrated_to_shared") }
         )
         PreviewFiles = @("AGENTS.md", "config.toml", "rules\default.rules")
     },
@@ -94,19 +102,28 @@ $Script:Assistants = @(
         Source       = Join-Path $env:USERPROFILE ".gemini"
         RootFiles    = @("GEMINI.md", "settings.json")
         NestedFiles  = @(
+            "config\mcp_config.json",
             "antigravity\mcp_config.json",
             "antigravity\user_settings.pb",
             "antigravity\browserAllowlist.txt",
-            "antigravity\browserOnboardingStatus.txt"
+            "antigravity\browserOnboardingStatus.txt",
+            "antigravity-ide\mcp_config.json",
+            "antigravity-ide\user_settings.pb",
+            "antigravity-ide\browserAllowlist.txt",
+            "antigravity-ide\browserOnboardingStatus.txt"
         )
         Directories  = @(
             @{ RelativePath = "antigravity\knowledge"; ExcludeNames = @() },
-            @{ RelativePath = "antigravity\scratch"; ExcludeNames = @() }
+            @{ RelativePath = "antigravity\scratch"; ExcludeNames = @() },
+            @{ RelativePath = "antigravity-ide\knowledge"; ExcludeNames = @() },
+            @{ RelativePath = "antigravity-ide\scratch"; ExcludeNames = @() }
         )
         PreviewFiles = @(
             "GEMINI.md",
             "settings.json",
+            "config\mcp_config.json",
             "antigravity\mcp_config.json",
+            "antigravity-ide\mcp_config.json",
             "antigravity\browserAllowlist.txt"
         )
     },
@@ -116,7 +133,7 @@ $Script:Assistants = @(
         RootFiles    = @("settings.json", "statusline-command.sh")
         NestedFiles  = @()
         Directories  = @(
-            @{ RelativePath = "skills"; ExcludeNames = @(".git") }
+            @{ RelativePath = "skills"; ExcludeNames = @(".git", ".conflicts", "_migrated_to_shared") }
         )
         PreviewFiles = @("settings.json", "statusline-command.sh")
     },
@@ -126,10 +143,41 @@ $Script:Assistants = @(
         RootFiles      = @()
         NestedFiles    = @()
         Directories    = @(
-            @{ RelativePath = "skills"; ExcludeNames = @(".git") }
+            @{ RelativePath = "skills"; ExcludeNames = @(".git", ".conflicts", "_migrated_to_shared") }
         )
         PreviewFiles   = @()
         SkillMigration = $false
+    }
+)
+
+$Script:AppConfigs = @(
+    @{
+        Name         = "claude"
+        Source       = Join-Path $env:APPDATA "Claude"
+        RootFiles    = @(
+            "claude_desktop_config.json",
+            "extensions-installations.json",
+            "extensions-blocklist.json",
+            "cowork-enabled-cli-ops.json"
+        )
+        Directories  = @(
+            @{ RelativePath = "Claude Extensions Settings"; ExcludeNames = @() }
+        )
+        PreviewFiles = @("claude_desktop_config.json", "extensions-installations.json")
+    },
+    @{
+        Name         = "codex"
+        Source       = Join-Path $env:APPDATA "Codex"
+        RootFiles    = @("browser-sidebar-local-servers.json")
+        Directories  = @()
+        PreviewFiles = @("browser-sidebar-local-servers.json")
+    },
+    @{
+        Name         = "openai-codex"
+        Source       = Join-Path $env:APPDATA "OpenAI\Codex"
+        RootFiles    = @("chrome-native-hosts-v2.json")
+        Directories  = @()
+        PreviewFiles = @("chrome-native-hosts-v2.json")
     }
 )
 
@@ -394,6 +442,42 @@ function Resolve-SkillConflict {
     Write-Log "Conflict resolved by keeping shared copy for $(Split-Path $LocalPath -Leaf)." -Level Success
 }
 
+function Resolve-SkillSyncConflict {
+    param(
+        [string]$AssistantName,
+        [string]$LocalPath,
+        [string]$SharedPath
+    )
+
+    $decision = $ConflictPolicy
+    $skillName = Split-Path $LocalPath -Leaf
+    if ($decision -eq "interactive" -and -not $Force -and -not (Test-IsDryRun)) {
+        Write-Log "Skill conflict for '$($AssistantName):$skillName'." -Level Warning
+        Write-Host "  [l] prefer local and update shared"
+        Write-Host "  [s] prefer shared and preserve local conflict copy"
+        $choice = Read-Host "Choice"
+        if ($choice -eq "l") { $decision = "prefer-local" }
+        else { $decision = "prefer-shared" }
+    }
+    elseif ($decision -eq "interactive") {
+        Write-Log "Skill conflict for '$($AssistantName):$skillName'; defaulting preview/forced run to prefer-shared." -Level Warning
+        $decision = "prefer-shared"
+    }
+
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    if ($decision -eq "prefer-local") {
+        $sharedArchive = Join-Path $Script:SharedSkills.Source ".conflicts\$AssistantName\$timestamp\$skillName"
+        Copy-TopLevelItem -SourcePath $SharedPath -DestinationPath $sharedArchive
+        Copy-TopLevelItem -SourcePath $LocalPath -DestinationPath $SharedPath
+        Write-Log "Updated shared skill from $AssistantName: $skillName" -Level Success
+        return
+    }
+
+    $localArchive = Join-Path $Script:SharedSkills.Source ".conflicts\$AssistantName\$timestamp\$skillName"
+    Copy-TopLevelItem -SourcePath $LocalPath -DestinationPath $localArchive
+    Write-Log "Kept shared skill and preserved conflicting local copy: $skillName" -Level Success
+}
+
 function Invoke-SkillAudit {
     Ensure-SharedSkillsDirectory
     Write-Log "=== Shared Skills Audit ==="
@@ -431,7 +515,63 @@ function Invoke-SkillAudit {
     }
 }
 
-function Invoke-SkillMigration {
+function Invoke-SkillSync {
+    Ensure-SharedSkillsDirectory
+    Write-Log "=== Shared Skills Sync ==="
+
+    foreach ($assistant in $Script:Assistants) {
+        $skillRoot = Get-SkillRoot -Assistant $assistant
+        if (-not $skillRoot -or -not (Test-Path $skillRoot)) {
+            continue
+        }
+
+        $excludeNames = Get-SkillExcludeNames -Assistant $assistant
+        Write-Log "Syncing skills from $($assistant.Name) into shared set..."
+        foreach ($item in Get-ChildItem -LiteralPath $skillRoot -Force) {
+            if ($excludeNames -contains $item.Name) {
+                continue
+            }
+
+            $sharedPath = Join-Path $Script:SharedSkills.Source $item.Name
+            if (-not (Test-Path $sharedPath)) {
+                Copy-TopLevelItem -SourcePath $item.FullName -DestinationPath $sharedPath
+                Write-Log "Added shared skill from $($assistant.Name): $($item.Name)" -Level Success
+                continue
+            }
+
+            $localSignature = Get-PathSignature -Path $item.FullName
+            $sharedSignature = Get-PathSignature -Path $sharedPath
+            if ($localSignature -ne $sharedSignature) {
+                Resolve-SkillSyncConflict -AssistantName $assistant.Name -LocalPath $item.FullName -SharedPath $sharedPath
+            }
+        }
+    }
+
+    $sharedItems = @()
+    if (Test-Path $Script:SharedSkills.Source) {
+        $sharedItems = Get-ChildItem -LiteralPath $Script:SharedSkills.Source -Force |
+            Where-Object { $Script:SharedSkills.ExcludeNames -notcontains $_.Name }
+    }
+
+    foreach ($assistant in $Script:Assistants) {
+        $skillRoot = Get-SkillRoot -Assistant $assistant
+        if (-not $skillRoot) {
+            continue
+        }
+
+        Ensure-Directory -Path $skillRoot
+        Write-Log "Mirroring shared skills into $($assistant.Name)..."
+        foreach ($item in $sharedItems) {
+            $destination = Join-Path $skillRoot $item.Name
+            if (-not (Test-Path $destination) -or (Get-PathSignature -Path $destination) -ne (Get-PathSignature -Path $item.FullName)) {
+                Copy-TopLevelItem -SourcePath $item.FullName -DestinationPath $destination
+                Write-Log "Mirrored shared skill to $($assistant.Name): $($item.Name)" -Level Success
+            }
+        }
+    }
+}
+
+function Invoke-DestructiveSkillMigration {
     Ensure-SharedSkillsDirectory
     Write-Log "=== Shared Skills Migration ==="
 
@@ -513,6 +653,37 @@ function Sync-SharedSkillsBackup {
     Copy-FilteredDirectory -SourcePath $Script:SharedSkills.Source -DestinationPath $sharedDestination -ExcludeNames $Script:SharedSkills.ExcludeNames | Out-Null
 }
 
+function Sync-AppConfigBackup {
+    param(
+        [hashtable]$AppConfig,
+        [string]$DestinationRoot
+    )
+
+    if (-not (Test-Path $AppConfig.Source)) {
+        return
+    }
+
+    $appRoot = Join-Path (Join-Path $DestinationRoot "app-configs") $AppConfig.Name
+    if (Test-Path $appRoot) {
+        if (Test-IsDryRun) {
+            Write-Log "Dry run: would replace app config backup at $appRoot"
+        }
+        else {
+            Remove-Item -Path $appRoot -Recurse -Force
+        }
+    }
+    Ensure-Directory -Path $appRoot
+
+    foreach ($relativeFile in $AppConfig.RootFiles) {
+        Copy-FileIfExists -SourceRoot $AppConfig.Source -DestinationRoot $appRoot -RelativePath $relativeFile
+    }
+    foreach ($directory in $AppConfig.Directories) {
+        $sourceDirectory = Join-Path $AppConfig.Source $directory.RelativePath
+        $destinationDirectory = Join-Path $appRoot $directory.RelativePath
+        Copy-FilteredDirectory -SourcePath $sourceDirectory -DestinationPath $destinationDirectory -ExcludeNames $directory.ExcludeNames | Out-Null
+    }
+}
+
 function Restore-Assistant {
     param(
         [hashtable]$Assistant,
@@ -533,13 +704,13 @@ function Restore-Assistant {
         Copy-FileIfExists -SourceRoot $assistantBackup -DestinationRoot $Assistant.Source -RelativePath $relativeFile
     }
     foreach ($relativeFile in $Assistant.NestedFiles) {
-        if ($Assistant.Name -eq "gemini" -and $relativeFile -eq "antigravity\browserOnboardingStatus.txt") {
+        if ($Assistant.Name -eq "gemini" -and $relativeFile -in @("antigravity\browserOnboardingStatus.txt", "antigravity-ide\browserOnboardingStatus.txt")) {
             continue
         }
         Copy-FileIfExists -SourceRoot $assistantBackup -DestinationRoot $Assistant.Source -RelativePath $relativeFile
     }
     foreach ($directory in $Assistant.Directories) {
-        if ($Assistant.Name -eq "gemini" -and $directory.RelativePath -in @("antigravity\knowledge", "antigravity\scratch")) {
+        if ($Assistant.Name -eq "gemini" -and $directory.RelativePath -in @("antigravity\knowledge", "antigravity\scratch", "antigravity-ide\knowledge", "antigravity-ide\scratch")) {
             continue
         }
         $sourceDirectory = Join-Path $assistantBackup $directory.RelativePath
@@ -562,6 +733,31 @@ function Restore-SharedSkills {
     Copy-FilteredDirectory -SourcePath $sharedBackup -DestinationPath $Script:SharedSkills.Source -ExcludeNames $Script:SharedSkills.ExcludeNames | Out-Null
 }
 
+function Restore-AppConfig {
+    param(
+        [hashtable]$AppConfig,
+        [string]$BackupRoot
+    )
+
+    $appBackup = Join-Path (Join-Path $BackupRoot "app-configs") $AppConfig.Name
+    if (-not (Test-Path $appBackup)) {
+        return
+    }
+
+    Ensure-Directory -Path $AppConfig.Source
+    foreach ($relativeFile in $AppConfig.RootFiles) {
+        Copy-FileIfExists -SourceRoot $appBackup -DestinationRoot $AppConfig.Source -RelativePath $relativeFile
+    }
+    foreach ($directory in $AppConfig.Directories) {
+        $sourceDirectory = Join-Path $appBackup $directory.RelativePath
+        if (-not (Test-Path $sourceDirectory)) {
+            continue
+        }
+        $destinationDirectory = Join-Path $AppConfig.Source $directory.RelativePath
+        Copy-FilteredDirectory -SourcePath $sourceDirectory -DestinationPath $destinationDirectory -ExcludeNames $directory.ExcludeNames | Out-Null
+    }
+}
+
 function Create-SafetyBackup {
     param([string]$RestoreLabel)
 
@@ -574,6 +770,9 @@ function Create-SafetyBackup {
         Sync-AssistantBackup -Assistant $assistant -DestinationRoot $preRestoreDir
     }
     Sync-SharedSkillsBackup -DestinationRoot $preRestoreDir
+    foreach ($appConfig in $Script:AppConfigs) {
+        Sync-AppConfigBackup -AppConfig $appConfig -DestinationRoot $preRestoreDir
+    }
 
     if (Test-Path $preRestoreRoot) {
         $oldBackups = Get-ChildItem $preRestoreRoot -Directory |
@@ -614,6 +813,25 @@ function Preview-RestoreDiffs {
                 if ($localHash.Hash -ne $backupHash.Hash) {
                     $diffItems += [pscustomobject]@{
                         Assistant = $assistant.Name
+                        Relative  = $relativePath
+                        Local     = $localFile
+                        Backup    = $backupFile
+                    }
+                }
+            }
+        }
+    }
+    foreach ($appConfig in $Script:AppConfigs) {
+        $appBackup = Join-Path (Join-Path $BackupRoot "app-configs") $appConfig.Name
+        foreach ($relativePath in $appConfig.PreviewFiles) {
+            $localFile = Join-Path $appConfig.Source $relativePath
+            $backupFile = Join-Path $appBackup $relativePath
+            if ((Test-Path $localFile) -and (Test-Path $backupFile)) {
+                $localHash = Get-FileHash -Algorithm SHA256 -Path $localFile
+                $backupHash = Get-FileHash -Algorithm SHA256 -Path $backupFile
+                if ($localHash.Hash -ne $backupHash.Hash) {
+                    $diffItems += [pscustomobject]@{
+                        Assistant = "app-configs/$($appConfig.Name)"
                         Relative  = $relativePath
                         Local     = $localFile
                         Backup    = $backupFile
@@ -743,7 +961,7 @@ function Invoke-GitSync {
 
 try {
     if (-not $Action) {
-        $Action = Get-MenuChoice -Title "Select Action" -Options @("Backup", "Restore", "Audit", "Migrate-Skills")
+        $Action = Get-MenuChoice -Title "Select Action" -Options @("Backup", "Restore", "Audit", "Sync-Skills", "Migrate-Skills")
     }
 
     Write-Log "=== LLM Sync Started ==="
@@ -764,8 +982,20 @@ try {
         return
     }
 
+    if ($Action -eq "sync-skills") {
+        Invoke-SkillSync
+        Write-Log "=== LLM Sync Completed ===" -Level Success
+        return
+    }
+
     if ($Action -eq "migrate-skills") {
-        Invoke-SkillMigration
+        if ($DestructiveMigrate) {
+            Invoke-DestructiveSkillMigration
+        }
+        else {
+            Write-Log "migrate-skills now aliases safe sync-skills. Use -DestructiveMigrate to archive/remove local copies." -Level Warning
+            Invoke-SkillSync
+        }
         Write-Log "=== LLM Sync Completed ===" -Level Success
         return
     }
@@ -807,6 +1037,10 @@ try {
         }
         Write-Log "Restoring $($Script:SharedSkills.Name)..."
         Restore-SharedSkills -BackupRoot $backupRoot
+        foreach ($appConfig in $Script:AppConfigs) {
+            Write-Log "Restoring app-configs/$($appConfig.Name)..."
+            Restore-AppConfig -AppConfig $appConfig -BackupRoot $backupRoot
+        }
     }
     else {
         Ensure-Directory -Path $backupRoot
@@ -816,6 +1050,10 @@ try {
         }
         Write-Log "Backing up $($Script:SharedSkills.Name)..."
         Sync-SharedSkillsBackup -DestinationRoot $backupRoot
+        foreach ($appConfig in $Script:AppConfigs) {
+            Write-Log "Backing up app-configs/$($appConfig.Name)..."
+            Sync-AppConfigBackup -AppConfig $appConfig -DestinationRoot $backupRoot
+        }
 
         if ($Force -or (Read-Host "Push backup changes to Git? (y/n)") -eq 'y') {
             Invoke-GitSync -Action push -TargetPath $backupRoot

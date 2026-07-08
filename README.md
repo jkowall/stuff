@@ -29,12 +29,13 @@ Antigravity Sync scripts provide a unified way to manage your IDE configuration 
 - **Extension Reconciliation**: Compares locally installed extensions with the backup and warns you if you have local extensions that aren't backed up.
 - **Git Integration**: Optional prompt to pull latest changes from Git before sync and push updates after backup.
 
-LLM Sync scripts provide a separate cross-platform backup and restore flow for assistant home directories and an optional shared `~/.skills` folder.
+LLM Sync scripts provide a separate cross-platform backup, restore, and skill mirror flow for assistant home directories and a shared `~/.skills` folder.
 
 **Key Features:**
 
-- **Per-Assistant Subdirectories**: Each machine backup stores `codex/`, `gemini/`, `claude/`, `agents/`, and optional `shared-skills/` separately for safer restores.
-- **Conservative Whitelisting**: Sync only portable config, prompts, rules, memories, and skills. Skip auth/session files, caches, logs, local databases, and project-local conversation state.
+- **Per-Assistant Subdirectories**: Each machine backup stores `codex/`, `gemini/`, `claude/`, `agents/`, `shared-skills/`, and portable `app-configs/` separately for safer restores.
+- **Shared Skill Mirror**: `sync-skills` unions Codex and Claude skills into `~/.skills`, then mirrors the shared set back into both assistant-local skill directories without deleting extra local skill folders.
+- **Conservative Whitelisting**: Sync only portable config, prompts, rules, memories, skills, Antigravity and Antigravity IDE config, and app metadata. Skip auth/session files, caches, logs, local databases, browser profiles, and project-local conversation state.
 - **Safety Restore Flow**: Restore creates a pre-restore snapshot outside Git and can preview diffs for key text config files before overwrite.
 - **Scoped Git Integration**: Optional pull before sync and push after backup, staging only the selected backup subtree instead of unrelated repo changes.
 - **Dry Run Support**: Preview file operations and Git mutations before changing anything.
@@ -168,6 +169,12 @@ Scripts that require personal configuration now use external JSON config files s
 .\backup\LLM_Sync_Win.ps1 -Action backup -Versioned -DryRun
 ```
 
+**Windows shared skill sync preview:**
+
+```powershell
+.\backup\LLM_Sync_Win.ps1 -Action sync-skills -DryRun
+```
+
 **Windows restore preview using PowerShell WhatIf:**
 
 ```powershell
@@ -180,6 +187,12 @@ Scripts that require personal configuration now use external JSON config files s
 ./backup/LLM_Sync_Linux.sh backup --dry-run
 ```
 
+**Linux shared skill sync:**
+
+```bash
+./backup/LLM_Sync_Linux.sh sync-skills
+```
+
 **Linux backup with explicit machine name:**
 
 ```bash
@@ -190,6 +203,12 @@ Scripts that require personal configuration now use external JSON config files s
 
 ```bash
 ./backup/LLM_Sync_Mac.sh restore --dry-run
+```
+
+**macOS shared skill sync:**
+
+```bash
+./backup/LLM_Sync_Mac.sh sync-skills
 ```
 
 **macOS backup with normalized machine name:**
@@ -210,6 +229,7 @@ On macOS and Linux, the backup folder now defaults to the short host name withou
     claude/
     agents/
     shared-skills/
+    app-configs/
 ```
 
 ## Prerequisites
