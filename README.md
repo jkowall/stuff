@@ -53,7 +53,7 @@ The `system/` directory is organized by platform: `macos/`, `windows/`, and `lin
 | [`Update-AllPackages_Win.ps1`](system/windows/Update-AllPackages_Win.ps1) | Weekly update script for winget, Windows Store, Chocolatey, npm, WSL apt, and pip packages. |
 | [`Setup-PackageUpdateTasks.ps1`](system/windows/Setup-PackageUpdateTasks.ps1) | Sets up a Windows Task Scheduler task for weekly updates. |
 | [`list_apps.ps1`](system/windows/list_apps.ps1) | Lists installed applications from multiple sources (Registry, Store, Winget, etc.). |
-| [`Update-CloudflareDNS.ps1`](system/windows/Update-CloudflareDNS.ps1) | Dynamic DNS updater for Cloudflare. |
+| [`Update-CloudflareDNS.ps1`](system/windows/Update-CloudflareDNS.ps1) | Dynamic DNS updater for Cloudflare with optional daily Task Scheduler management. |
 | [`clean_plex.ps1`](system/windows/clean_plex.ps1) | Cleans up orphaned data and caches in Plex Media Server. |
 | [`restart_camera_hub.ps1`](system/windows/restart_camera_hub.ps1) | Restarts the Elgato Camera Hub application. |
 | [`Toggle-PrompterDisplayAndRestartCameraHub.ps1`](system/windows/Toggle-PrompterDisplayAndRestartCameraHub.ps1) | Toggles the Elgato Prompter display and restarts Camera Hub after power-off. |
@@ -70,6 +70,19 @@ Package updater scripts no longer schedule themselves when you run them manually
 - Windows: `system/windows/Setup-PackageUpdateTasks.ps1`
 - Linux: `system/linux/Setup-PackageUpdateTasks_Linux.sh`
 - macOS: `system/macos/Setup-PackageUpdateTasks_Mac.sh`
+
+The Cloudflare dynamic DNS updater can install or remove its own daily Windows Task Scheduler entry. The task runs at 12:00 PM by default under the signed-in user and catches up when the PC becomes available after a missed run:
+
+```powershell
+# Install or update the daily task at noon
+.\system\windows\Update-CloudflareDNS.ps1 -InstallScheduledTask
+
+# Choose another local time
+.\system\windows\Update-CloudflareDNS.ps1 -InstallScheduledTask -DailyAt '06:30'
+
+# Remove the task
+.\system\windows\Update-CloudflareDNS.ps1 -RemoveScheduledTask
+```
 
 ### Media Processing
 
