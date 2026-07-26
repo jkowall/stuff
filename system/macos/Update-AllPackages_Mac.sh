@@ -13,7 +13,8 @@
 set -o pipefail
 
 # launchd provides a minimal PATH, so include common package manager locations.
-export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin"
+# Homebrew versioned Node formulae are keg-only, so npm is not linked into Homebrew's bin directory.
+export PATH="/opt/homebrew/opt/node@24/bin:/usr/local/opt/node@24/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="$(dirname "$SCRIPT_DIR")/logs"
