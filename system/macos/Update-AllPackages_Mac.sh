@@ -426,11 +426,34 @@ update_npm() {
 
     log "Info" "Checking for outdated NPM packages..."
     # npm outdated exits with 1 if packages are outdated
-    OUTDATED=$(npm outdated -g --parseable 2>/dev/null | awk -F: 'NF>=4 {print $(NF-2)}') || true
+    local outdated_json=""
+    outdated_json=$(npm outdated -g --json 2>>"$LOG_FILE") || true
+
+    if ! OUTDATED=$(python3 -c '
+import json
+import sys
+
+data = json.load(sys.stdin)
+if "error" in data:
+    raise ValueError("npm outdated returned an error")
+
+for package, versions in data.items():
+    if isinstance(versions, dict) and versions.get("latest"):
+        print("{}@{}".format(package, versions["latest"]))
+' <<< "$outdated_json"); then
+        NPM_STATUS="Warning"
+        log "Warning" "Unable to parse the NPM outdated package list."
+        return
+    fi
     
     if [ -n "$OUTDATED" ]; then
-        log "Info" "Updating packages: $(echo $OUTDATED | tr '\n' ' ')"
-        if npm install -g $OUTDATED 2>&1 | tee -a "$LOG_FILE"; then
+        local package_args=()
+        while IFS= read -r package_spec; do
+            [ -n "$package_spec" ] && package_args+=("$package_spec")
+        done <<< "$OUTDATED"
+
+        log "Info" "Updating packages: ${package_args[*]}"
+        if npm install -g "${package_args[@]}" 2>&1 | tee -a "$LOG_FILE"; then
             NPM_STATUS="Success"
             log "Success" "NPM global updates completed successfully"
         else
