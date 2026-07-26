@@ -210,6 +210,55 @@ run_logged_with_timeout() {
     return "$command_status"
 }
 
+migrate_claude_code_to_latest() {
+    if ! brew list --cask claude-code >/dev/null 2>&1; then
+        return 0
+    fi
+
+    log "Info" "Migrating Claude Code from the stable cask to claude-code@latest."
+    log "Info" "Running: brew fetch --cask claude-code@latest"
+    if ! brew fetch --cask claude-code@latest 2>&1 | tee -a "$LOG_FILE"; then
+        log "Warning" "Unable to prefetch claude-code@latest. Keeping the stable cask installed."
+        return 1
+    fi
+
+    log "Info" "Running: brew uninstall --cask claude-code"
+    if ! brew uninstall --cask claude-code 2>&1 | tee -a "$LOG_FILE"; then
+        log "Warning" "Unable to uninstall the stable Claude Code cask."
+        return 1
+    fi
+
+    log "Info" "Running: brew install --cask claude-code@latest"
+    if brew install --cask claude-code@latest 2>&1 | tee -a "$LOG_FILE"; then
+        log "Success" "Claude Code now tracks the latest Homebrew release channel."
+        return 0
+    fi
+
+    log "Error" "Unable to install claude-code@latest. Attempting to restore the stable cask."
+    brew uninstall --cask --force claude-code@latest 2>&1 | tee -a "$LOG_FILE" || true
+    if brew install --cask claude-code 2>&1 | tee -a "$LOG_FILE"; then
+        log "Warning" "Restored the stable Claude Code cask after the migration failed."
+    else
+        log "Error" "Unable to restore the stable Claude Code cask. Manual repair is required."
+    fi
+    return 1
+}
+
+update_claude_desktop_cask() {
+    if ! brew list --cask claude >/dev/null 2>&1; then
+        return 0
+    fi
+
+    log "Info" "Running: brew upgrade --cask --greedy-auto-updates claude"
+    if brew upgrade --cask --greedy-auto-updates claude 2>&1 | tee -a "$LOG_FILE"; then
+        log "Success" "Claude Desktop is up-to-date."
+        return 0
+    fi
+
+    log "Warning" "Claude Desktop update encountered issues."
+    return 1
+}
+
 update_brew() {
     if ! command -v brew >/dev/null 2>&1; then
         log "Warning" "Homebrew not found. Skipping."
@@ -222,12 +271,26 @@ update_brew() {
 
     log "Info" "Running: brew update"
     if brew update 2>&1 | tee -a "$LOG_FILE"; then
+        local claude_update_status=0
+        if ! migrate_claude_code_to_latest; then
+            claude_update_status=1
+        fi
+
         log "Info" "Running: brew upgrade"
         if brew upgrade 2>&1 | tee -a "$LOG_FILE"; then
+            if ! update_claude_desktop_cask; then
+                claude_update_status=1
+            fi
+
             log "Info" "Running: brew cleanup"
             brew cleanup 2>&1 | tee -a "$LOG_FILE"
-            BREW_STATUS="Success"
-            log "Success" "Homebrew updates completed successfully"
+            if [ "$claude_update_status" -eq 0 ]; then
+                BREW_STATUS="Success"
+                log "Success" "Homebrew updates completed successfully"
+            else
+                BREW_STATUS="Warning"
+                log "Warning" "Homebrew updates completed, but a Claude update step failed."
+            fi
         else
             BREW_STATUS="Warning"
             log "Warning" "Brew upgrade encountered issues."
