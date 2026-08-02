@@ -14,7 +14,7 @@ This directory contains system automation and maintenance scripts, organized by 
 |--------|-------------|
 | `audit_apps.sh` | Audits installed GUI applications and identifies their source (Brew, MAS, or Manual). |
 | `sync_apps.sh` | Compares an audit file with local state and installs missing managed apps. |
-| `Update-AllPackages_Mac.sh` | Weekly updater for brew, mas, npm, pip, and rustup. |
+| `Update-AllPackages_Mac.sh` | Weekly updater for brew, mas, npm, pip, and rustup. Keeps Codex alpha and Claude next under `~/.local` so Homebrew and Node upgrades cannot replace them. |
 | `Setup-PackageUpdateTasks_Mac.sh` | Installs/removes the macOS weekly launchd job for updates. |
 
 ## Windows Scripts (`system/windows/`)

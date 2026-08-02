@@ -13,8 +13,9 @@
 set -o pipefail
 
 # launchd provides a minimal PATH, so include common package manager locations.
-# Homebrew versioned Node formulae are keg-only, so npm is not linked into Homebrew's bin directory.
-export PATH="/opt/homebrew/opt/node@24/bin:/usr/local/opt/node@24/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin"
+# Keep channel-managed CLIs outside Homebrew so formula/cask upgrades cannot replace them.
+NPM_CHANNEL_PREFIX="${HOME}/.local"
+export PATH="${NPM_CHANNEL_PREFIX}/bin:/opt/homebrew/opt/node@24/bin:/usr/local/opt/node@24/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="$(dirname "$SCRIPT_DIR")/logs"
@@ -28,6 +29,10 @@ PENDING_FILE="${SCRIPT_DIR}/pending-interactive-update"
 MACUPDATER_CLIENT="/Applications/MacUpdater.app/Contents/Resources/macupdater_client"
 MACUPDATER_SCAN_TIMEOUT_SECONDS=120
 MACUPDATER_APP_TIMEOUT_SECONDS=900
+NPM_CHANNEL_PACKAGES=(
+    "@openai/codex@alpha"
+    "@anthropic-ai/claude-code@next"
+)
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -500,29 +505,93 @@ data = json.load(sys.stdin)
 if "error" in data:
     raise ValueError("npm outdated returned an error")
 
+managed_packages = {
+    package_spec.rsplit("@", 1)[0]
+    for package_spec in sys.argv[1:]
+}
+managed_packages.add("npm")
+
 for package, versions in data.items():
+    if package in managed_packages:
+        continue
     if isinstance(versions, dict) and versions.get("latest"):
         print("{}@{}".format(package, versions["latest"]))
-' <<< "$outdated_json"); then
+' "${NPM_CHANNEL_PACKAGES[@]}" <<< "$outdated_json"); then
         NPM_STATUS="Warning"
         log "Warning" "Unable to parse the NPM outdated package list."
         return
     fi
-    
+
+    local package_args=()
     if [ -n "$OUTDATED" ]; then
-        local package_args=()
         while IFS= read -r package_spec; do
             [ -n "$package_spec" ] && package_args+=("$package_spec")
         done <<< "$OUTDATED"
+    fi
 
-        log "Info" "Updating packages: ${package_args[*]}"
-        if npm install -g "${package_args[@]}" 2>&1 | tee -a "$LOG_FILE"; then
-            NPM_STATUS="Success"
-            log "Success" "NPM global updates completed successfully"
+    local attempted=0
+    local failed=0
+    local package_spec
+    for package_spec in "${package_args[@]}"; do
+        attempted=$((attempted + 1))
+        log "Info" "Updating NPM global package: $package_spec"
+        if npm install -g "$package_spec" 2>&1 | tee -a "$LOG_FILE"; then
+            log "Success" "NPM global package updated: $package_spec"
         else
-            NPM_STATUS="Warning"
-            log "Warning" "NPM update encountered issues."
+            failed=$((failed + 1))
+            log "Warning" "NPM global package update failed: $package_spec"
         fi
+    done
+
+    if ! mkdir -p "${NPM_CHANNEL_PREFIX}/bin"; then
+        NPM_STATUS="Warning"
+        log "Warning" "Unable to create NPM channel prefix: $NPM_CHANNEL_PREFIX"
+        return
+    fi
+
+    for package_spec in "${NPM_CHANNEL_PACKAGES[@]}"; do
+        local package_name="${package_spec%@*}"
+        local binary_name=""
+        case "$package_name" in
+            "@openai/codex") binary_name="codex" ;;
+            "@anthropic-ai/claude-code") binary_name="claude" ;;
+        esac
+
+        local current_version=""
+        current_version=$(npm list -g --prefix "$NPM_CHANNEL_PREFIX" "$package_name" --depth=0 --json 2>>"$LOG_FILE" | python3 -c '
+import json
+import sys
+
+data = json.load(sys.stdin)
+print(data.get("dependencies", {}).get(sys.argv[1], {}).get("version", ""))
+' "$package_name") || true
+
+        local channel_version=""
+        if ! channel_version=$(npm view "$package_spec" version 2>>"$LOG_FILE"); then
+            failed=$((failed + 1))
+            log "Warning" "Unable to resolve NPM release channel: $package_spec"
+            continue
+        fi
+
+        if [ "$current_version" != "$channel_version" ] || [ ! -x "${NPM_CHANNEL_PREFIX}/bin/${binary_name}" ]; then
+            attempted=$((attempted + 1))
+            log "Info" "Updating NPM channel package in ${NPM_CHANNEL_PREFIX}: $package_spec"
+            if npm install -g --prefix "$NPM_CHANNEL_PREFIX" --allow-scripts=@anthropic-ai/claude-code "$package_spec" 2>&1 | tee -a "$LOG_FILE" \
+                && [ -x "${NPM_CHANNEL_PREFIX}/bin/${binary_name}" ]; then
+                log "Success" "NPM channel package updated: ${package_name}@${channel_version}"
+            else
+                failed=$((failed + 1))
+                log "Warning" "NPM channel package update failed: $package_spec"
+            fi
+        fi
+    done
+
+    if [ "$failed" -gt 0 ]; then
+        NPM_STATUS="Warning"
+        log "Warning" "NPM updates completed with $failed failure(s)."
+    elif [ "$attempted" -gt 0 ]; then
+        NPM_STATUS="Success"
+        log "Success" "NPM global updates completed successfully"
     else
         NPM_STATUS="Success"
         log "Success" "NPM global packages are already up-to-date"

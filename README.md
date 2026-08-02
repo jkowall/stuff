@@ -43,7 +43,7 @@ The `system/` directory is organized by platform: `macos/`, `windows/`, and `lin
 |--------|-------------|
 | [`audit_apps.sh`](system/macos/audit_apps.sh) | Audits installed GUI applications and identifies their source (Homebrew, App Store, or Manual). |
 | [`sync_apps.sh`](system/macos/sync_apps.sh) | Compares an audit file with local state and installs missing managed apps. |
-| [`Update-AllPackages_Mac.sh`](system/macos/Update-AllPackages_Mac.sh) | Weekly package updater (brew, mas, npm, pip, rustup). |
+| [`Update-AllPackages_Mac.sh`](system/macos/Update-AllPackages_Mac.sh) | Weekly package updater (brew, mas, npm, pip, rustup). Keeps Codex alpha and Claude next under `~/.local` so Homebrew and Node upgrades cannot replace them. |
 | [`Setup-PackageUpdateTasks_Mac.sh`](system/macos/Setup-PackageUpdateTasks_Mac.sh) | Installs/removes the macOS weekly launchd job for updates. |
 
 #### Windows (`system/windows/`)
