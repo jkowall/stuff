@@ -2,15 +2,23 @@
 # LLM_Sync_Mac.sh
 setopt TYPESET_SILENT
 
+SCRIPT_DIR=${0:A:h}
+REPO_SKILLS_DIR="${SCRIPT_DIR:h}/skills"
 CONFIG_FILE="$HOME/Private/Configs/LLM_Sync_Mac.json"
-if [[ ! -f "$CONFIG_FILE" ]]; then
-    echo "Error: Config file not found: $CONFIG_FILE"
-    echo "Please create it with DefaultBackupPath."
-    exit 1
-fi
+BASE_BACKUP_DIR=""
+PRE_RESTORE_BASE=""
 
-BASE_BACKUP_DIR=$(python3 -c "import json, os; print(os.path.expanduser(json.load(open('$CONFIG_FILE'))['DefaultBackupPath']))")
-PRE_RESTORE_BASE=$(python3 -c "import json, os; config = json.load(open('$CONFIG_FILE')); print(os.path.expanduser(config.get('PreRestorePath', '/tmp')))")
+load_backup_config() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo "Error: Config file not found: $CONFIG_FILE"
+        echo "Please create it with DefaultBackupPath."
+        return 1
+    fi
+
+    BASE_BACKUP_DIR=$(python3 -c "import json, os; print(os.path.expanduser(json.load(open('$CONFIG_FILE'))['DefaultBackupPath']))") || return 1
+    PRE_RESTORE_BASE=$(python3 -c "import json, os; config = json.load(open('$CONFIG_FILE')); print(os.path.expanduser(config.get('PreRestorePath', '/tmp')))") || return 1
+}
+
 resolve_machine_name() {
     local explicit_name=$1
     if [[ -n "$explicit_name" ]]; then
@@ -36,7 +44,7 @@ ACTION=""
 MACHINE_NAME=""
 for arg in "$@"; do
     case "$arg" in
-        backup|restore|audit|sync-skills|migrate-skills)
+        backup|restore|audit|sync-skills|migrate-skills|install-repo-skills)
             ACTION="$arg"
             ;;
         -v|--versioned)
@@ -56,9 +64,6 @@ for arg in "$@"; do
             ;;
     esac
 done
-
-HOSTNAME=$(resolve_machine_name "$MACHINE_NAME")
-BACKUP_DIR_DEFAULT="$BASE_BACKUP_DIR/$HOSTNAME"
 
 run_cmd() {
     if [[ "$DRY_RUN" == "true" ]]; then
@@ -83,7 +88,7 @@ confirm() {
 
 remove_tree() {
     local target_path=$1
-    if [[ -e "$target_path" ]]; then
+    if [[ -e "$target_path" || -L "$target_path" ]]; then
         run_cmd rm -rf "$target_path"
     fi
 }
@@ -179,6 +184,85 @@ copy_top_level_item() {
     else
         run_cmd cp "$source_path" "$destination_path"
     fi
+}
+
+repo_skill_package_is_valid() {
+    local source_path=$1
+    local skill_name
+    skill_name=$(basename "$source_path")
+    local skill_file="$source_path/SKILL.md"
+
+    if [[ ! -f "$skill_file" || -e "$source_path/.git" ]]; then
+        echo "Error: Invalid repository skill package: $skill_name"
+        return 1
+    fi
+
+    if ! awk -v expected="$skill_name" '
+        { sub(/\r$/, "", $0) }
+        NR == 1 {
+            if ($0 != "---") exit 1
+            in_frontmatter = 1
+            next
+        }
+        in_frontmatter && $0 == "---" {
+            closed = 1
+            exit
+        }
+        in_frontmatter && $0 ~ /^name:[[:space:]]*/ {
+            value = $0
+            sub(/^name:[[:space:]]*/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            gsub(/^"|"$/, "", value)
+            single_quote = sprintf("%c", 39)
+            if (substr(value, 1, 1) == single_quote && substr(value, length(value), 1) == single_quote) {
+                value = substr(value, 2, length(value) - 2)
+            }
+            name = value
+        }
+        in_frontmatter && $0 ~ /^description:[[:space:]]*/ {
+            value = $0
+            sub(/^description:[[:space:]]*/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            gsub(/^"|"$/, "", value)
+            single_quote = sprintf("%c", 39)
+            if (substr(value, 1, 1) == single_quote && substr(value, length(value), 1) == single_quote) {
+                value = substr(value, 2, length(value) - 2)
+            }
+            description = value
+        }
+        END {
+            if (!closed || name != expected || description == "") exit 1
+        }
+    ' "$skill_file"; then
+        echo "Error: $skill_name/SKILL.md must have frontmatter with a matching name and non-empty description."
+        return 1
+    fi
+}
+
+replace_repo_skill_item() {
+    local source_path=$1
+    local destination_path=$2
+    local archive_path=$3
+    local copy_label=$4
+    REPO_SKILL_COPY_CHANGED=false
+
+    if [[ -e "$destination_path" || -L "$destination_path" ]]; then
+        if [[ -e "$destination_path" && "$(path_signature "$source_path")" == "$(path_signature "$destination_path")" ]]; then
+            return 0
+        fi
+
+        run_cmd mkdir -p "$(dirname "$archive_path")" || return 1
+        run_cmd cp -a "$destination_path" "$archive_path" || return 1
+        if [[ "$DRY_RUN" == "true" ]]; then
+            echo "Would preserve previous $copy_label copy: $(basename "$source_path")"
+        else
+            echo "Preserved previous $copy_label copy: $(basename "$source_path")"
+        fi
+        remove_tree "$destination_path" || return 1
+    fi
+
+    copy_top_level_item "$source_path" "$destination_path" || return 1
+    REPO_SKILL_COPY_CHANGED=true
 }
 
 find_assistant_skill_items() {
@@ -457,6 +541,69 @@ sync_skills() {
     done
 }
 
+install_repo_skills() {
+    if [[ ! -d "$REPO_SKILLS_DIR" ]]; then
+        echo "Error: Repository skills directory not found: $REPO_SKILLS_DIR"
+        return 1
+    fi
+
+    ensure_shared_skills_dir || return 1
+    local timestamp
+    timestamp="$(date +%Y%m%d_%H%M%S)_$$"
+    local package_count=0
+
+    while IFS= read -r source_path; do
+        repo_skill_package_is_valid "$source_path" || return 1
+        package_count=$((package_count + 1))
+    done < <(find "$REPO_SKILLS_DIR" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | sort)
+
+    if [[ $package_count -eq 0 ]]; then
+        echo "Error: No repository skill packages found in $REPO_SKILLS_DIR"
+        return 1
+    fi
+
+    local updated_count=0
+
+    while IFS= read -r source_path; do
+        local skill_name
+        skill_name=$(basename "$source_path")
+        local shared_path="$HOME/.skills/$skill_name"
+        local package_changed=false
+        replace_repo_skill_item "$source_path" "$shared_path" "$HOME/.skills/.conflicts/repo-install/$timestamp/shared/$skill_name" "shared" || return 1
+        if [[ "$REPO_SKILL_COPY_CHANGED" == "true" ]]; then
+            package_changed=true
+        fi
+
+        for assistant in codex claude; do
+            local skill_root="$HOME/.${assistant}/skills"
+            local destination="$skill_root/$skill_name"
+            run_cmd mkdir -p "$skill_root" || return 1
+            replace_repo_skill_item "$source_path" "$destination" "$HOME/.skills/.conflicts/repo-install/$timestamp/$assistant/$skill_name" "$assistant" || return 1
+            if [[ "$REPO_SKILL_COPY_CHANGED" == "true" ]]; then
+                package_changed=true
+            fi
+        done
+
+        if [[ "$package_changed" == "true" ]]; then
+            updated_count=$((updated_count + 1))
+            if [[ "$DRY_RUN" == "true" ]]; then
+                echo "Would install or update repository skill: $skill_name"
+            else
+                echo "Installed or updated repository skill: $skill_name"
+            fi
+        else
+            echo "Repository skill already current: $skill_name"
+        fi
+    done < <(find "$REPO_SKILLS_DIR" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | sort)
+
+    local current_count=$((package_count - updated_count))
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo "Validated $package_count repository skills; would update $updated_count and leave $current_count already current."
+    else
+        echo "Validated $package_count repository skills; updated $updated_count and left $current_count already current."
+    fi
+}
+
 destructive_migrate_skills() {
     ensure_shared_skills_dir
     for assistant in codex claude; do
@@ -654,14 +801,15 @@ git_sync_push() {
 }
 
 if [[ -z "$ACTION" ]]; then
-    show_menu "Select Action" "Backup" "Restore" "Audit" "Sync-Skills" "Migrate-Skills"
+    show_menu "Select Action" "Backup" "Restore" "Audit" "Sync-Skills" "Migrate-Skills" "Install-Repo-Skills"
     choice_idx=$?
     case "$choice_idx" in
         0) ACTION="backup" ;;
         1) ACTION="restore" ;;
         2) ACTION="audit" ;;
         3) ACTION="sync-skills" ;;
-        *) ACTION="migrate-skills" ;;
+        4) ACTION="migrate-skills" ;;
+        *) ACTION="install-repo-skills" ;;
     esac
 fi
 
@@ -690,6 +838,15 @@ if [[ "$ACTION" == "migrate-skills" ]]; then
     fi
     exit 0
 fi
+
+if [[ "$ACTION" == "install-repo-skills" ]]; then
+    install_repo_skills
+    exit $?
+fi
+
+load_backup_config || exit 1
+HOSTNAME=$(resolve_machine_name "$MACHINE_NAME")
+BACKUP_DIR_DEFAULT="$BASE_BACKUP_DIR/$HOSTNAME"
 
 if confirm "Pull latest settings from Git"; then
     git_sync_pull

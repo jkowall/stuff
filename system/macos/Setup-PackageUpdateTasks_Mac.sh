@@ -19,31 +19,33 @@ INTERACTIVE_MODE=0
 write_status() {
     local level="$1"
     local message="$2"
-    local color=""
 
-    case "$level" in
-        "Info")    color="\033[36m" ;;
-        "Success") color="\033[32m" ;;
-        "Warning") color="\033[33m" ;;
-        "Error")   color="\033[31m" ;;
-        *)         color="\033[0m"  ;;
-    esac
-
-    echo -e "${color}${message}\033[0m"
+    if [ -t 1 ]; then
+        local color=""
+        case "$level" in
+            "Info")    color="\033[36m" ;;
+            "Success") color="\033[32m" ;;
+            "Warning") color="\033[33m" ;;
+            "Error")   color="\033[31m" ;;
+        esac
+        printf '%b\n' "${color}${message}\033[0m"
+    else
+        printf '%s\n' "$message"
+    fi
 }
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [--remove]
+Usage: $(basename "$0") [--interactive | --remove]
 
 Installs or removes a weekly launchd job for Update-AllPackages_Mac.sh.
 Reinstalling replaces any existing job with the same label.
 The updater is cached under ~/Library/Application Scripts at install time so
 launchd does not need runtime access to OneDrive/CloudStorage paths.
-Use --interactive to open an interactive Terminal session when triggered by launchd
-so you can enter sudo/app-specific passwords if required.
-When interactive Terminal launch fails, a retry job is installed to run the
-pending update after GUI login/unlock makes Terminal available.
+The default install is non-interactive and removes any pending retry job.
+Use --interactive to open Terminal when launchd triggers so you can enter
+sudo/app-specific passwords if required. Interactive installs also add a
+15-minute pending retry job for cases where Terminal cannot open until login/unlock.
 EOF
 }
 
@@ -57,8 +59,11 @@ bootout_agent() {
 bootstrap_agent() {
     launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH" >/dev/null 2>&1 || \
         launchctl load -w "$PLIST_PATH"
-    launchctl bootstrap "gui/$(id -u)" "$PENDING_PLIST_PATH" >/dev/null 2>&1 || \
-        launchctl load -w "$PENDING_PLIST_PATH"
+
+    if [ "$INTERACTIVE_MODE" -eq 1 ]; then
+        launchctl bootstrap "gui/$(id -u)" "$PENDING_PLIST_PATH" >/dev/null 2>&1 || \
+            launchctl load -w "$PENDING_PLIST_PATH"
+    fi
 }
 
 remove_schedule() {
@@ -149,14 +154,15 @@ ${runner_args}
         <integer>0</integer>
     </dict>
     <key>StandardOutPath</key>
-    <string>${LAUNCHD_LOG}</string>
+    <string>/dev/null</string>
     <key>StandardErrorPath</key>
     <string>${LAUNCHD_LOG}</string>
 </dict>
 </plist>
 EOF
 
-    cat > "$PENDING_PLIST_PATH" <<EOF
+    if [ "$INTERACTIVE_MODE" -eq 1 ]; then
+        cat > "$PENDING_PLIST_PATH" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -178,24 +184,31 @@ EOF
         <string>${PENDING_FILE}</string>
     </array>
     <key>StandardOutPath</key>
-    <string>${LAUNCHD_LOG}</string>
+    <string>/dev/null</string>
     <key>StandardErrorPath</key>
     <string>${LAUNCHD_LOG}</string>
 </dict>
 </plist>
 EOF
+    else
+        rm -f "$PENDING_PLIST_PATH" "$PENDING_FILE"
+    fi
 
     bootstrap_agent
 
     write_status "Success" "Installed launchd job ${LABEL}."
-    write_status "Success" "Installed launchd job ${PENDING_LABEL}."
     write_status "Info" "Schedule: Every Saturday at 1:00 AM"
     write_status "Info" "Plist: ${PLIST_PATH}"
-    write_status "Info" "Pending retry plist: ${PENDING_PLIST_PATH}"
     write_status "Info" "Runner: ${RUNNER_PATH}"
     write_status "Info" "Source script cached from: ${UPDATE_SCRIPT}"
     write_status "Info" "Launchd executes cached script: ${CACHED_UPDATE_SCRIPT}"
-    write_status "Info" "Pending marker: ${PENDING_FILE}"
+    if [ "$INTERACTIVE_MODE" -eq 1 ]; then
+        write_status "Success" "Installed 15-minute pending retry job ${PENDING_LABEL}."
+        write_status "Info" "Pending retry plist: ${PENDING_PLIST_PATH}"
+        write_status "Info" "Pending marker: ${PENDING_FILE}"
+    else
+        write_status "Info" "Interactive pending retry job is not installed."
+    fi
 }
 
 main() {
@@ -220,4 +233,6 @@ main() {
     esac
 }
 
-main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    main "$@"
+fi

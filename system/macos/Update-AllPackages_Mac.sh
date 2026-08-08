@@ -29,6 +29,11 @@ PENDING_FILE="${SCRIPT_DIR}/pending-interactive-update"
 MACUPDATER_CLIENT="/Applications/MacUpdater.app/Contents/Resources/macupdater_client"
 MACUPDATER_SCAN_TIMEOUT_SECONDS=120
 MACUPDATER_APP_TIMEOUT_SECONDS=900
+BREW_UPDATE_MAX_ATTEMPTS=2
+BREW_UPDATE_RETRY_DELAY_SECONDS=15
+UPDATE_LOCK_FILE="/tmp/${SCRIPT_NAME}.${UID}.lock"
+NPM_GENERIC_ALLOWED_SCRIPTS="@github/keytar,node-pty"
+NPM_CHANNEL_ALLOWED_SCRIPTS="@anthropic-ai/claude-code"
 NPM_CHANNEL_PACKAGES=(
     "@openai/codex@alpha"
     "@anthropic-ai/claude-code@next"
@@ -55,13 +60,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Ensure log directory exists
-mkdir -p "$LOG_DIR"
-
-if [ "$PENDING_ONLY" -eq 1 ] && [ ! -f "$PENDING_FILE" ]; then
-    exit 0
-fi
-
 # Status tracking
 BREW_STATUS="Skipped"
 MAS_STATUS="Skipped"
@@ -70,6 +68,7 @@ NPM_STATUS="Skipped"
 PIP_STATUS="Skipped"
 PIPX_STATUS="Skipped"
 RUSTUP_STATUS="Skipped"
+LOG_CLEANUP_STATUS="Skipped"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -79,19 +78,22 @@ log() {
     local level="$1"
     local message="$2"
     local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
-    local color=""
-
-    case "$level" in
-        "Info")    color="\033[37m" ;; # White
-        "Success") color="\033[32m" ;; # Green
-        "Warning") color="\033[33m" ;; # Yellow
-        "Error")   color="\033[31m" ;; # Red
-        *)         color="\033[0m"  ;;
-    esac
-
     local log_entry="[$timestamp] [$level] $message"
-    echo -e "${color}${log_entry}\033[0m"
-    echo "$log_entry" >> "$LOG_FILE"
+
+    if [ -t 1 ]; then
+        local color=""
+        case "$level" in
+            "Info")    color="\033[37m" ;; # White
+            "Success") color="\033[32m" ;; # Green
+            "Warning") color="\033[33m" ;; # Yellow
+            "Error")   color="\033[31m" ;; # Red
+        esac
+        printf '%b\n' "${color}${log_entry}\033[0m"
+    else
+        printf '%s\n' "$log_entry"
+    fi
+
+    printf '%s\n' "$log_entry" >> "$LOG_FILE"
 }
 
 is_data_saver_active() {
@@ -115,17 +117,24 @@ SWIFT
 }
 
 mark_pending_interactive_run() {
-    {
+    if ! {
         printf 'created_at=%s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
         printf 'script=%s\n' "$0"
         printf 'log=%s\n' "$LOG_FILE"
-    } > "$PENDING_FILE"
+    } > "$PENDING_FILE"; then
+        log "Error" "Unable to save pending interactive update marker: $PENDING_FILE"
+        return 1
+    fi
+
     log "Warning" "Saved pending interactive update marker: $PENDING_FILE"
 }
 
 clear_pending_interactive_run() {
     if [ -f "$PENDING_FILE" ]; then
-        rm -f "$PENDING_FILE"
+        if ! rm -f "$PENDING_FILE"; then
+            log "Error" "Unable to clear pending interactive update marker: $PENDING_FILE"
+            return 1
+        fi
         log "Info" "Cleared pending interactive update marker: $PENDING_FILE"
     fi
 }
@@ -136,7 +145,9 @@ launch_interactive_terminal() {
     fi
 
     if [ -t 0 ] || [ -t 1 ]; then
-        clear_pending_interactive_run
+        if ! clear_pending_interactive_run; then
+            return 1
+        fi
         return 0
     fi
 
@@ -182,7 +193,7 @@ run_logged_with_timeout() {
 
     local output_file
     output_file="$(mktemp "${TMPDIR:-/tmp}/update-command-output.XXXXXX")" || {
-        log "Error" "Unable to create temporary output file for command: $*"
+        log "Warning" "Unable to create temporary output file for command: $*"
         return 125
     }
 
@@ -215,6 +226,33 @@ run_logged_with_timeout() {
     return "$command_status"
 }
 
+acquire_update_lock() {
+    exec 9>"$UPDATE_LOCK_FILE"
+    local open_status=$?
+    if [ "$open_status" -ne 0 ]; then
+        log "Error" "Unable to open package update lock: $UPDATE_LOCK_FILE"
+        return 1
+    fi
+
+    /usr/bin/lockf -s -t 0 9
+    local lock_status=$?
+    case "$lock_status" in
+        0)
+            return 0
+            ;;
+        75)
+            exec 9>&-
+            log "Warning" "Another package update run is already active. Skipping this run."
+            return 2
+            ;;
+        *)
+            exec 9>&-
+            log "Error" "Unable to acquire package update lock: $UPDATE_LOCK_FILE"
+            return 1
+            ;;
+    esac
+}
+
 migrate_claude_code_to_latest() {
     if ! brew list --cask claude-code >/dev/null 2>&1; then
         return 0
@@ -239,12 +277,13 @@ migrate_claude_code_to_latest() {
         return 0
     fi
 
-    log "Error" "Unable to install claude-code@latest. Attempting to restore the stable cask."
+    log "Warning" "Unable to install claude-code@latest. Attempting to restore the stable cask."
     brew uninstall --cask --force claude-code@latest 2>&1 | tee -a "$LOG_FILE" || true
     if brew install --cask claude-code 2>&1 | tee -a "$LOG_FILE"; then
         log "Warning" "Restored the stable Claude Code cask after the migration failed."
     else
         log "Error" "Unable to restore the stable Claude Code cask. Manual repair is required."
+        return 2
     fi
     return 1
 }
@@ -274,35 +313,67 @@ update_brew() {
     log "Info" "STARTING HOMEBREW UPDATES"
     log "Info" "============================================================"
 
-    log "Info" "Running: brew update"
-    if brew update 2>&1 | tee -a "$LOG_FILE"; then
-        local claude_update_status=0
-        if ! migrate_claude_code_to_latest; then
-            claude_update_status=1
+    local brew_update_succeeded=0
+    local brew_update_attempt=1
+    while [ "$brew_update_attempt" -le "$BREW_UPDATE_MAX_ATTEMPTS" ]; do
+        log "Info" "Running: brew update (attempt ${brew_update_attempt}/${BREW_UPDATE_MAX_ATTEMPTS})"
+        if brew update 2>&1 | tee -a "$LOG_FILE"; then
+            brew_update_succeeded=1
+            break
         fi
 
-        log "Info" "Running: brew upgrade"
-        if brew upgrade 2>&1 | tee -a "$LOG_FILE"; then
-            if ! update_claude_desktop_cask; then
-                claude_update_status=1
-            fi
+        if [ "$brew_update_attempt" -lt "$BREW_UPDATE_MAX_ATTEMPTS" ]; then
+            log "Warning" "Brew update failed; retrying once in ${BREW_UPDATE_RETRY_DELAY_SECONDS} seconds in case the network is still recovering."
+            sleep "$BREW_UPDATE_RETRY_DELAY_SECONDS"
+        fi
+        brew_update_attempt=$((brew_update_attempt + 1))
+    done
 
-            log "Info" "Running: brew cleanup"
-            brew cleanup 2>&1 | tee -a "$LOG_FILE"
-            if [ "$claude_update_status" -eq 0 ]; then
-                BREW_STATUS="Success"
-                log "Success" "Homebrew updates completed successfully"
-            else
-                BREW_STATUS="Warning"
-                log "Warning" "Homebrew updates completed, but a Claude update step failed."
-            fi
+    if [ "$brew_update_succeeded" -ne 1 ]; then
+        BREW_STATUS="Error"
+        log "Error" "Brew update failed after ${BREW_UPDATE_MAX_ATTEMPTS} attempts."
+        return
+    fi
+
+    local brew_warning=0
+    local brew_error=0
+    migrate_claude_code_to_latest
+    local claude_code_status=$?
+    case "$claude_code_status" in
+        1) brew_warning=1 ;;
+        2) brew_error=1 ;;
+    esac
+
+    log "Info" "Running: brew upgrade"
+    if ! brew upgrade 2>&1 | tee -a "$LOG_FILE"; then
+        if [ "$brew_error" -eq 1 ]; then
+            BREW_STATUS="Error"
         else
             BREW_STATUS="Warning"
-            log "Warning" "Brew upgrade encountered issues."
         fi
-    else
+        log "Warning" "Brew upgrade encountered issues."
+        return
+    fi
+
+    if ! update_claude_desktop_cask; then
+        brew_warning=1
+    fi
+
+    log "Info" "Running: brew cleanup"
+    if ! brew cleanup 2>&1 | tee -a "$LOG_FILE"; then
+        brew_warning=1
+        log "Warning" "Brew cleanup encountered issues."
+    fi
+
+    if [ "$brew_error" -eq 1 ]; then
         BREW_STATUS="Error"
-        log "Error" "Brew update failed."
+        log "Error" "Homebrew updates completed, but Claude Code requires manual repair."
+    elif [ "$brew_warning" -eq 0 ]; then
+        BREW_STATUS="Success"
+        log "Success" "Homebrew updates completed successfully"
+    else
+        BREW_STATUS="Warning"
+        log "Warning" "Homebrew updates completed with one or more warnings."
     fi
 }
 
@@ -336,10 +407,12 @@ update_macupdater_apps() {
     log "Info" "STARTING MACUPDATER APP UPDATES"
     log "Info" "============================================================"
 
+    local scan_warning=0
     log "Info" "Running: macupdater_client scan --outdated --quiet"
     if run_logged_with_timeout "$MACUPDATER_SCAN_TIMEOUT_SECONDS" "$MACUPDATER_CLIENT" scan --outdated --quiet; then
         log "Success" "MacUpdater scan completed successfully"
     else
+        scan_warning=1
         log "Warning" "MacUpdater live scan failed. Falling back to cached MacUpdater app list."
     fi
 
@@ -357,37 +430,45 @@ update_macupdater_apps() {
         return
     fi
 
-    local app_count
-    app_count="$(python3 - "$list_file" <<'PY'
+    local app_counts
+    if ! app_counts="$(python3 - "$list_file" 2>>"$LOG_FILE" <<'PY'
 import json
 import sys
 
 with open(sys.argv[1], "r", encoding="utf-8") as f:
     data = json.load(f)
 
-apps = [
+if not isinstance(data, dict) or not isinstance(data.get("apps"), list):
+    raise ValueError("MacUpdater JSON does not contain an apps list")
+if any(not isinstance(app, dict) for app in data["apps"]):
+    raise ValueError("MacUpdater JSON contains an invalid app entry")
+
+auto_apps = [
     app for app in data.get("apps", [])
     if app.get("outdated") and app.get("auto_updatable") and app.get("installed_path")
 ]
-print(len(apps))
-PY
-)"
-
-    local manual_count
-    manual_count="$(python3 - "$list_file" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], "r", encoding="utf-8") as f:
-    data = json.load(f)
-
-apps = [
+manual_apps = [
     app for app in data.get("apps", [])
     if app.get("outdated") and not app.get("auto_updatable") and app.get("installed_path")
 ]
-print(len(apps))
+print(f"{len(auto_apps)}\t{len(manual_apps)}")
 PY
-)"
+)"; then
+        MACUPDATER_STATUS="Warning"
+        log "Warning" "Unable to parse or validate the MacUpdater JSON app list."
+        rm -f "$list_file"
+        return
+    fi
+
+    local app_count=""
+    local manual_count=""
+    IFS=$'\t' read -r app_count manual_count <<< "$app_counts"
+    if [[ ! "$app_count" =~ ^[0-9]+$ || ! "$manual_count" =~ ^[0-9]+$ ]]; then
+        MACUPDATER_STATUS="Warning"
+        log "Warning" "MacUpdater returned invalid app counts after JSON parsing."
+        rm -f "$list_file"
+        return
+    fi
 
     if [ "$manual_count" -gt 0 ]; then
         log "Warning" "MacUpdater found $manual_count outdated non-auto-updatable app(s) that need manual or vendor-specific updates."
@@ -401,10 +482,10 @@ with open(sys.argv[1], "r", encoding="utf-8") as f:
 for app in data.get("apps", []):
     if app.get("outdated") and not app.get("auto_updatable") and app.get("installed_path"):
         print("\t".join([
-            app.get("name") or "",
-            app.get("installed_version") or "",
-            app.get("newest_version") or "",
-            app.get("installed_path") or "",
+            str(app.get("name") or ""),
+            str(app.get("installed_version") or ""),
+            str(app.get("newest_version") or ""),
+            str(app.get("installed_path") or ""),
         ]))
 PY
             log "Warning" "Manual MacUpdater update remains: ${app_name} (${installed_version} -> ${newest_version}) at ${app_path}"
@@ -415,6 +496,9 @@ PY
         if [ "$manual_count" -gt 0 ]; then
             MACUPDATER_STATUS="Warning"
             log "Warning" "MacUpdater found no auto-updatable non-MAS app updates, but manual updates remain."
+        elif [ "$scan_warning" -eq 1 ]; then
+            MACUPDATER_STATUS="Warning"
+            log "Warning" "MacUpdater cached data found no non-MAS app updates, but the live scan failed."
         else
             MACUPDATER_STATUS="Success"
             log "Success" "MacUpdater found no non-MAS app updates."
@@ -434,7 +518,7 @@ PY
         return
     }
 
-    python3 - "$list_file" > "$updates_file" <<'PY'
+    if ! python3 - "$list_file" > "$updates_file" 2>>"$LOG_FILE" <<'PY'
 import json
 import sys
 
@@ -444,12 +528,18 @@ with open(sys.argv[1], "r", encoding="utf-8") as f:
 for app in data.get("apps", []):
     if app.get("outdated") and app.get("auto_updatable") and app.get("installed_path"):
         print("\t".join([
-            app.get("name") or "",
-            app.get("installed_version") or "",
-            app.get("newest_version") or "",
-            app.get("installed_path") or "",
+            str(app.get("name") or ""),
+            str(app.get("installed_version") or ""),
+            str(app.get("newest_version") or ""),
+            str(app.get("installed_path") or ""),
         ]))
 PY
+    then
+        MACUPDATER_STATUS="Warning"
+        log "Warning" "Unable to prepare the parsed MacUpdater update list."
+        rm -f "$list_file" "$updates_file"
+        return
+    fi
 
     local updated=0
     local failed=0
@@ -473,13 +563,59 @@ PY
 
     rm -f "$list_file" "$updates_file"
 
-    if [ "$failed" -gt 0 ] || [ "$manual_count" -gt 0 ]; then
+    if [ "$failed" -gt 0 ] || [ "$manual_count" -gt 0 ] || [ "$scan_warning" -eq 1 ]; then
         MACUPDATER_STATUS="Warning"
-        log "Warning" "MacUpdater completed with $updated updated, $failed failed/skipped, and $manual_count manual update(s) remaining."
+        log "Warning" "MacUpdater completed with $updated updated, $failed failed/skipped, $manual_count manual update(s), and live-scan warning=$scan_warning."
     else
         MACUPDATER_STATUS="Success"
         log "Success" "MacUpdater completed successfully ($updated updated)."
     fi
+}
+
+get_npm_installed_version() {
+    local prefix="$1"
+    local package_name="$2"
+
+    npm list -g --prefix "$prefix" "$package_name" --depth=0 --json 2>>"$LOG_FILE" | python3 -c '
+import json
+import sys
+
+data = json.load(sys.stdin)
+print(data.get("dependencies", {}).get(sys.argv[1], {}).get("version", ""))
+' "$package_name" 2>>"$LOG_FILE"
+}
+
+verify_npm_channel_package() {
+    local package_name="$1"
+    local expected_version="$2"
+    local binary_path="$3"
+    local installed_version=""
+    local version_output=""
+
+    installed_version="$(get_npm_installed_version "$NPM_CHANNEL_PREFIX" "$package_name")" || true
+    if [ "$installed_version" != "$expected_version" ]; then
+        log "Warning" "NPM channel package version verification failed for ${package_name}: expected ${expected_version}, found ${installed_version:-missing}."
+        return 1
+    fi
+
+    if [ ! -x "$binary_path" ]; then
+        log "Warning" "NPM channel executable is missing or not executable: $binary_path"
+        return 1
+    fi
+
+    if ! version_output="$("$binary_path" --version 2>&1)" || [ -z "$version_output" ]; then
+        log "Warning" "NPM channel executable health check failed: $binary_path --version"
+        return 1
+    fi
+
+    if [[ "$version_output" != *"$expected_version"* ]]; then
+        log "Warning" "NPM channel executable version verification failed for ${package_name}: expected ${expected_version}, output was ${version_output}."
+        return 1
+    fi
+
+    version_output="${version_output%%$'\n'*}"
+    log "Info" "Verified NPM channel package ${package_name}@${installed_version}; executable reports: ${version_output}"
+    return 0
 }
 
 update_npm() {
@@ -535,7 +671,7 @@ for package, versions in data.items():
     for package_spec in "${package_args[@]}"; do
         attempted=$((attempted + 1))
         log "Info" "Updating NPM global package: $package_spec"
-        if npm install -g "$package_spec" 2>&1 | tee -a "$LOG_FILE"; then
+        if npm install -g --strict-allow-scripts --allow-scripts="$NPM_GENERIC_ALLOWED_SCRIPTS" "$package_spec" 2>&1 | tee -a "$LOG_FILE"; then
             log "Success" "NPM global package updated: $package_spec"
         else
             failed=$((failed + 1))
@@ -555,16 +691,15 @@ for package, versions in data.items():
         case "$package_name" in
             "@openai/codex") binary_name="codex" ;;
             "@anthropic-ai/claude-code") binary_name="claude" ;;
+            *)
+                failed=$((failed + 1))
+                log "Warning" "No executable health check is configured for NPM channel package: $package_name"
+                continue
+                ;;
         esac
 
         local current_version=""
-        current_version=$(npm list -g --prefix "$NPM_CHANNEL_PREFIX" "$package_name" --depth=0 --json 2>>"$LOG_FILE" | python3 -c '
-import json
-import sys
-
-data = json.load(sys.stdin)
-print(data.get("dependencies", {}).get(sys.argv[1], {}).get("version", ""))
-' "$package_name") || true
+        current_version="$(get_npm_installed_version "$NPM_CHANNEL_PREFIX" "$package_name")" || true
 
         local channel_version=""
         if ! channel_version=$(npm view "$package_spec" version 2>>"$LOG_FILE"); then
@@ -573,16 +708,21 @@ print(data.get("dependencies", {}).get(sys.argv[1], {}).get("version", ""))
             continue
         fi
 
-        if [ "$current_version" != "$channel_version" ] || [ ! -x "${NPM_CHANNEL_PREFIX}/bin/${binary_name}" ]; then
-            attempted=$((attempted + 1))
-            log "Info" "Updating NPM channel package in ${NPM_CHANNEL_PREFIX}: $package_spec"
-            if npm install -g --prefix "$NPM_CHANNEL_PREFIX" --allow-scripts=@anthropic-ai/claude-code "$package_spec" 2>&1 | tee -a "$LOG_FILE" \
-                && [ -x "${NPM_CHANNEL_PREFIX}/bin/${binary_name}" ]; then
-                log "Success" "NPM channel package updated: ${package_name}@${channel_version}"
-            else
-                failed=$((failed + 1))
-                log "Warning" "NPM channel package update failed: $package_spec"
-            fi
+        local binary_path="${NPM_CHANNEL_PREFIX}/bin/${binary_name}"
+        if [ "$current_version" = "$channel_version" ] \
+            && verify_npm_channel_package "$package_name" "$channel_version" "$binary_path"; then
+            log "Success" "NPM channel package is current and healthy: ${package_name}@${channel_version}"
+            continue
+        fi
+
+        attempted=$((attempted + 1))
+        log "Info" "Updating NPM channel package in ${NPM_CHANNEL_PREFIX}: $package_spec"
+        if npm install -g --prefix "$NPM_CHANNEL_PREFIX" --strict-allow-scripts --allow-scripts="$NPM_CHANNEL_ALLOWED_SCRIPTS" "$package_spec" 2>&1 | tee -a "$LOG_FILE" \
+            && verify_npm_channel_package "$package_name" "$channel_version" "$binary_path"; then
+            log "Success" "NPM channel package updated and verified: ${package_name}@${channel_version}"
+        else
+            failed=$((failed + 1))
+            log "Warning" "NPM channel package update or verification failed: $package_spec"
         fi
     done
 
@@ -678,7 +818,8 @@ show_summary() {
     log "Info" "UPDATE SUMMARY"
     log "Info" "============================================================"
 
-    local has_errors=false
+    local has_errors=0
+    local has_warnings=0
     local summary_lines=(
         "Homebrew:  $BREW_STATUS"
         "App Store: $MAS_STATUS"
@@ -687,37 +828,104 @@ show_summary() {
         "PIP:       $PIP_STATUS"
         "PIPX:      $PIPX_STATUS"
         "Rustup:    $RUSTUP_STATUS"
+        "Log cleanup: $LOG_CLEANUP_STATUS"
+    )
+    local statuses=(
+        "$BREW_STATUS"
+        "$MAS_STATUS"
+        "$MACUPDATER_STATUS"
+        "$NPM_STATUS"
+        "$PIP_STATUS"
+        "$PIPX_STATUS"
+        "$RUSTUP_STATUS"
+        "$LOG_CLEANUP_STATUS"
     )
     local summary_message
+    local status
 
     printf '%s\n' "${summary_lines[@]}" | tee -a "$LOG_FILE"
     summary_message="$(printf '%s\n' "${summary_lines[@]}")"
 
-    if [[ "$BREW_STATUS" == "Error" || "$MAS_STATUS" == "Error" || "$MACUPDATER_STATUS" == "Error" || "$NPM_STATUS" == "Error" || "$PIP_STATUS" == "Error" || "$PIPX_STATUS" == "Error" || "$RUSTUP_STATUS" == "Error" ]]; then
-        has_errors=true
-    fi
+    for status in "${statuses[@]}"; do
+        case "$status" in
+            "Error") has_errors=1 ;;
+            "Warning") has_warnings=1 ;;
+        esac
+    done
 
     log "Info" "============================================================"
     log "Info" "Log file saved to: $LOG_FILE"
 
-    if [ "$has_errors" = true ]; then
-        show_notification "Package Updates Completed with Errors" "$summary_message"
+    if [ "$has_errors" -eq 1 ]; then
+        log "Error" "Package updates completed with errors."
+        show_notification "Package Updates Completed with Errors" "$summary_message" || true
+        return 1
+    elif [ "$has_warnings" -eq 1 ]; then
+        log "Warning" "Package updates completed with warnings."
+        show_notification "Package Updates Completed with Warnings" "$summary_message" || true
+        return 2
     else
-        show_notification "Package Updates Complete" "$summary_message"
+        log "Success" "Package updates completed cleanly."
+        show_notification "Package Updates Complete" "$summary_message" || true
+        return 0
     fi
 }
 
 cleanup_logs() {
     log "Info" "Cleaning up old log files (keeping most recent 3)..."
-    ls -t "${LOG_DIR}/${SCRIPT_NAME}_${MACHINE_NAME}_"*.log 2>/dev/null | tail -n +4 | xargs -r rm -f
+
+    local log_files=()
+    local log_file
+    for log_file in "${LOG_DIR}/${SCRIPT_NAME}_${MACHINE_NAME}_"*.log; do
+        [ -f "$log_file" ] && log_files+=("$log_file")
+    done
+
+    while [ "${#log_files[@]}" -gt 3 ]; do
+        local oldest_log="${log_files[0]}"
+        for log_file in "${log_files[@]}"; do
+            if [ "$log_file" -ot "$oldest_log" ]; then
+                oldest_log="$log_file"
+            fi
+        done
+
+        if ! rm -f -- "$oldest_log"; then
+            LOG_CLEANUP_STATUS="Warning"
+            log "Warning" "Unable to remove old updater log: $oldest_log"
+            return
+        fi
+
+        local remaining_logs=()
+        for log_file in "${log_files[@]}"; do
+            if [ "$log_file" != "$oldest_log" ]; then
+                remaining_logs+=("$log_file")
+            fi
+        done
+        log_files=("${remaining_logs[@]}")
+    done
+
+    LOG_CLEANUP_STATUS="Success"
 }
 
 # ============================================================================
 # MAIN EXECUTION
 # ============================================================================
 
+main() {
+# Ensure log directory exists
+if ! mkdir -p "$LOG_DIR"; then
+    printf 'Error: unable to create log directory: %s\n' "$LOG_DIR" >&2
+    exit 1
+fi
+
+if [ "$PENDING_ONLY" -eq 1 ] && [ ! -f "$PENDING_FILE" ]; then
+    exit 0
+fi
+
 # Ensure log file exists
-touch "$LOG_FILE"
+if ! touch "$LOG_FILE"; then
+    printf 'Error: unable to create log file: %s\n' "$LOG_FILE" >&2
+    exit 1
+fi
 
 log "Info" "============================================================"
 log "Info" "PACKAGE UPDATE STARTED (User=$(whoami))"
@@ -737,6 +945,26 @@ if is_data_saver_active; then
     exit 0
 fi
 
+acquire_update_lock
+LOCK_STATUS=$?
+if [ "$LOCK_STATUS" -ne 0 ]; then
+    if [ "$LOCK_STATUS" -eq 2 ]; then
+        if [ "$INTERACTIVE_MODE" -eq 1 ]; then
+            if ! mark_pending_interactive_run; then
+                LOCK_STATUS=1
+            fi
+        fi
+        if [ "$LOCK_STATUS" -eq 2 ]; then
+            show_notification "Package Updates Already Running" "Skipped a duplicate package update run." || true
+        else
+            show_notification "Package Updates Could Not Start" "Another update is running, and the interactive retry could not be saved." || true
+        fi
+    else
+        show_notification "Package Updates Could Not Start" "Unable to acquire the package update lock." || true
+    fi
+    exit "$LOCK_STATUS"
+fi
+
 # Cleanup
 cleanup_logs
 
@@ -754,9 +982,17 @@ update_rustup
 
 # Summary
 show_summary
+FINAL_EXIT_CODE=$?
 
 echo ""
 log "Info" "Update process completed."
 if [ -t 0 ]; then
-    read -p "Press Enter to close..."
+    read -r -p "Press Enter to close..."
+fi
+
+exit "$FINAL_EXIT_CODE"
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    main "$@"
 fi

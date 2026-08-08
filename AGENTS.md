@@ -7,8 +7,15 @@ This file provides centralized instructions for all AI coding assistants working
 This is a personal scripts collection containing PowerShell (.ps1), shell (.sh), and Python (.py) scripts organized into subdirectories:
 
 - **`backup/`** - LLM configuration sync and Plex backup
+- **`skills/`** - Public, portable procedural skills installed through the LLM sync scripts
 - **`system/`** - Package management, DNS updates, system maintenance
 - **`media/`** - Video conversion and media downloading
+
+## Public Repository Boundary
+
+This repository is public. Professional identity, working preferences, public paths, documentation, and redacted examples are allowed when they support the scripts or documentation.
+
+Keep credentials, private communications, customer data, and sensitive personal details out of this repository. Store that material in the dedicated Private repository and reference it from scripts when needed.
 
 ## Karpathy-Inspired Coding Protocol
 
@@ -33,7 +40,7 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 | `LLM_Sync_Linux.json` | Personal backup directory path |
 | `plex_backup.json` | Local paths for Plex data, backups, and tools |
 
-**Never hardcode personal data directly in scripts.** Always ensure scripts point to the centralized location in the `Private` repository.
+**Never hardcode credentials or sensitive personal data directly in scripts.** Always ensure scripts point to the centralized location in the `Private` repository.
 
 ### Documentation Files
 
@@ -41,9 +48,10 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 |------|--------|
 | `README.md` | User-facing documentation for all scripts |
 | `AGENTS.md` | Centralized AI assistant instructions (this file) |
+| `skills/README.md` | Workflow skill catalog and cross-platform installation |
 | `CLAUDE.md` | Claude Code entry point; defers to AGENTS.md |
 | `GEMINI.md` | Gemini entry point; defers to AGENTS.md |
-| `LLM_Instructions.md` | Personal LLM preferences for use across AI services |
+| `LLM_Instructions.md` | Public-safe professional identity and working preferences for AI services |
 
 ### Key Scripts
 
@@ -58,7 +66,15 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 - **`system/macos/audit_apps.sh`** - Audits installed Mac GUI apps
 - **`system/macos/sync_apps.sh`** - Syncs Mac apps between machines
 - **`backup/plex_backup.ps1`** - Requires admin privileges, stops Plex services during backup
-- **`backup/LLM_Sync_*`** - Cross-platform sync suite (Win/Mac/Linux) for portable Codex, Gemini, Claude, Agents, and shared `.skills` settings
+- **`backup/LLM_Sync_*`** - Cross-platform sync suite (Win/Mac/Linux) for portable Codex, Gemini, Claude, Agents, shared `.skills` settings, and repository skill installation
+
+### Workflow Skill Guidelines
+
+- Each directory directly under `skills/` is one installable package and must contain a `SKILL.md` with YAML frontmatter whose `name` matches the directory and whose `description` is non-empty.
+- Descriptions must say what the skill does and when it should trigger. Procedures must define stable inputs, evidence order, mutation boundaries, output, and stopping conditions.
+- Skills in this public repository may name public projects and public paths, but must not contain customer data, private communications, credentials, internal identifiers, or confidential examples.
+- Keep organization-specific live knowledge outside this repository. A skill may tell the agent where to look during an authorized session, but must not embed private source contents.
+- When packages are added or renamed, update `skills/README.md`, the root `README.md`, and verify all three `install-repo-skills` actions.
 
 ## Coding Guidelines
 
@@ -73,7 +89,7 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 
 ### PowerShell Scripts
 
-1. **Config Loading Pattern** - Scripts should load config at the start:
+1. **Config Loading Pattern** - Config-dependent actions should load and validate config before use. Actions documented as configuration-free may branch before initialization:
    ```powershell
    $ConfigPath = Join-Path $PSScriptRoot "ScriptName.json"
    if (-not (Test-Path $ConfigPath)) {
@@ -88,7 +104,7 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 
 ### Shell Scripts
 
-1. **Config Loading** - Use Python to parse JSON:
+1. **Config Loading** - Use Python to parse JSON for config-dependent actions. Configuration-free actions may run before this initialization:
    ```bash
    VALUE=$(python3 -c "import json; print(json.load(open('config.json'))['Key'])")
    ```
@@ -103,7 +119,7 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 ### When Modifying Scripts
 
 1. Check if the script has a corresponding `.json` config file
-2. Never commit personal paths, tokens, or credentials
+2. Never commit tokens, credentials, customer data, private communications, or sensitive personal details. Public paths and non-sensitive professional context are allowed when they support the script or documentation.
 3. Update README.md if adding new scripts or config requirements
 4. Update AGENTS.md file structure if adding new files
 5. Log files (`.log`) are auto-generated and git-ignored
@@ -132,7 +148,7 @@ git config commit.gpgsign true
 ├── AGENTS.md                         # Centralized AI instructions (this file)
 ├── CLAUDE.md                         # Claude Code entry point
 ├── GEMINI.md                         # Gemini entry point
-├── LLM_Instructions.md               # Personal LLM preferences
+├── LLM_Instructions.md               # Public-safe professional identity and working preferences
 ├── LICENSE                            # License file
 │
 ├── backup/                            # Backup & Sync
@@ -141,16 +157,24 @@ git config commit.gpgsign true
 │   ├── LLM_Sync_Linux.sh              # Linux Codex/Gemini/Claude/Agents/shared-skills sync
 │   └── plex_backup.ps1               # Plex Media Server backup
 │
+├── skills/                            # Portable workflow skills
+│   ├── README.md                      # Catalog and installation
+│   └── <skill-name>/SKILL.md          # One procedural package per directory
+│
 ├── system/                            # System Maintenance
 │   ├── README.md                      # Overview of system scripts
 │   ├── macos/                         # macOS scripts
 │   │   ├── audit_apps.sh              # List GUI apps and sources
 │   │   ├── sync_apps.sh               # Install missing apps from audit
 │   │   ├── Update-AllPackages_Mac.sh  # macOS package updater
-│   │   └── Setup-PackageUpdateTasks_Mac.sh # macOS launchd setup
+│   │   ├── Setup-PackageUpdateTasks_Mac.sh # macOS launchd setup
+│   │   └── tests/test-package-update-scripts.sh # Offline macOS updater tests
 │   ├── windows/                       # Windows scripts
 │   │   ├── Update-AllPackages_Win.ps1 # Windows package updater
+│   │   ├── Update-AllPackages_Win.Core.ps1 # Pure updater helpers
 │   │   ├── Setup-PackageUpdateTasks.ps1 # Windows Task Scheduler setup
+│   │   ├── tests/Test-Update-AllPackages_Win.ps1 # Offline Windows updater tests
+│   │   ├── tests/fixtures/winget-cases.json # WinGet parser fixtures
 │   │   ├── Update-CloudflareDNS.ps1    # Dynamic DNS
 │   │   ├── clean_plex.ps1             # Plex cleanup
 │   │   ├── list_apps.ps1              # List installed apps
@@ -168,6 +192,8 @@ git config commit.gpgsign true
 
 ## Testing Notes
 
+- Run `/bin/bash system/macos/tests/test-package-update-scripts.sh` for offline macOS updater status, retention, and launchd-rendering coverage.
+- Run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\system\windows\tests\Test-Update-AllPackages_Win.ps1` for offline Windows parser, status-record, and scheduler-rendering coverage.
 - `backup/plex_backup.ps1` requires Plex to be installed and admin rights
 - `system/Update-CloudflareDNS.ps1` makes live API calls; test with caution
 - Media scripts require FFmpeg, yt-dlp, and scdl installed

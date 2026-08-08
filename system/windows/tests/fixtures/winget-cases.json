@@ -1,0 +1,65 @@
+{
+  "parserCases": [
+    {
+      "name": "winget rows exclude iCUE and reject pins footer",
+      "source": "winget",
+      "excludePackageIds": [
+        "Corsair.iCUE.5"
+      ],
+      "output": [
+        "Name                             Id                Version                       Available",
+        "------------------------------------------------------------------------------------------------------------",
+        "Claude                           Anthropic.Claude  1.24012.9.0                   1.25927.0",
+        "Corsair iCUE5 Software           Corsair.iCUE.5    5.48.58                       5.49.34",
+        "Spotify                          Spotify.Spotify   1.2.94.583.g60394bd5          1.2.95.453.g0eeebbed",
+        "3 upgrades available.",
+        "1 package(s) have pins that prevent upgrade. Use the 'winget pin' command to view and edit pins."
+      ],
+      "expectedIds": [
+        "Anthropic.Claude",
+        "Spotify.Spotify"
+      ]
+    },
+    {
+      "name": "msstore accepts an undotted product id",
+      "source": "msstore",
+      "excludePackageIds": [],
+      "output": [
+        "Name                             Id                Version                       Available",
+        "------------------------------------------------------------------------------------------------------------",
+        "Microsoft To Do                  9NBLGGH4NNS1      2.140.8111.0                  2.141.9000.0",
+        "1 upgrade available."
+      ],
+      "expectedIds": [
+        "9NBLGGH4NNS1"
+      ]
+    },
+    {
+      "name": "empty no-applicable output has no ids",
+      "source": "winget",
+      "excludePackageIds": [],
+      "output": [
+        "No installed package found matching input criteria."
+      ],
+      "expectedIds": []
+    }
+  ],
+  "exitCodeCases": [
+    {
+      "code": -1978335212,
+      "noApplicable": true
+    },
+    {
+      "code": -1978335189,
+      "noApplicable": true
+    },
+    {
+      "code": 0,
+      "noApplicable": false
+    },
+    {
+      "code": -1978335146,
+      "noApplicable": false
+    }
+  ]
+}

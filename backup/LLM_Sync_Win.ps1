@@ -12,7 +12,8 @@
     caches, logs, local databases, and machine-specific project state.
 
 .PARAMETER Action
-    'backup', 'restore', 'audit', 'sync-skills', or 'migrate-skills'
+    'backup', 'restore', 'audit', 'sync-skills', 'migrate-skills', or
+    'install-repo-skills'
 
 .PARAMETER Versioned
     Creates a timestamped machine backup folder for backup operations.
@@ -39,7 +40,7 @@
 [CmdletBinding(SupportsShouldProcess = $true)]
 param (
     [Parameter(Mandatory = $false, Position = 0)]
-    [ValidateSet("backup", "restore", "audit", "sync-skills", "migrate-skills")]
+    [ValidateSet("backup", "restore", "audit", "sync-skills", "migrate-skills", "install-repo-skills")]
     [string]$Action,
 
     [Parameter()]
@@ -67,17 +68,12 @@ if (-not $LogFile) {
     $LogFile = Join-Path $PSScriptRoot "$scriptName.log"
 }
 
-$ConfigPath = Join-Path $env:USERPROFILE "Private\Configs\LLM_Sync_Win.json"
-if (-not (Test-Path $ConfigPath)) {
-    Write-Error "Config file not found: $ConfigPath. Please create it with BaseBackupPath."
-    exit 1
-}
-$ConfigData = Get-Content $ConfigPath -Raw | ConvertFrom-Json
-
-$defaultPreRestore = if (Test-Path "D:\") { "D:\tmp" } else { $env:TEMP }
-$Script:PreRestoreBase = if ($ConfigData.PreRestorePath) { $ConfigData.PreRestorePath } else { $defaultPreRestore }
-$Script:BaseBackupPath = $ConfigData.BaseBackupPath
+$Script:ConfigPath = Join-Path $env:USERPROFILE "Private\Configs\LLM_Sync_Win.json"
+$Script:ConfigData = $null
+$Script:PreRestoreBase = $null
+$Script:BaseBackupPath = $null
 $Script:IsDryRun = [bool]($DryRun -or $WhatIfPreference)
+$Script:RepoSkillsPath = Join-Path (Split-Path $PSScriptRoot -Parent) "skills"
 $Script:SharedSkills = @{
     Name         = "shared-skills"
     Source       = Join-Path $env:USERPROFILE ".skills"
@@ -186,13 +182,28 @@ function Write-Log {
     $logEntry = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [$Level] $Message"
     $colors = @{ Info = "Cyan"; Success = "Green"; Warning = "Yellow"; Error = "Red" }
     Write-Host $logEntry -ForegroundColor $colors[$Level]
-    if ($LogFile) {
+    if ($LogFile -and -not $Script:IsDryRun) {
         Add-Content -Path $LogFile -Value $logEntry -ErrorAction SilentlyContinue
     }
 }
 
 function Test-IsDryRun {
     return [bool]$Script:IsDryRun
+}
+
+function Initialize-BackupConfiguration {
+    if (-not (Test-Path $Script:ConfigPath)) {
+        throw "Config file not found: $($Script:ConfigPath). Please create it with BaseBackupPath."
+    }
+
+    $Script:ConfigData = Get-Content $Script:ConfigPath -Raw | ConvertFrom-Json
+    if (-not $Script:ConfigData.BaseBackupPath) {
+        throw "Config file $($Script:ConfigPath) does not define BaseBackupPath."
+    }
+
+    $defaultPreRestore = if (Test-Path "D:\") { "D:\tmp" } else { $env:TEMP }
+    $Script:PreRestoreBase = if ($Script:ConfigData.PreRestorePath) { $Script:ConfigData.PreRestorePath } else { $defaultPreRestore }
+    $Script:BaseBackupPath = $Script:ConfigData.BaseBackupPath
 }
 
 function Get-SkillRoot {
@@ -336,14 +347,18 @@ function Copy-FilteredDirectory {
 
 function Remove-PathIfExists {
     param([string]$Path)
-    if (-not (Test-Path $Path)) {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if (-not $item) {
         return
     }
     if (Test-IsDryRun) {
         Write-Log "Dry run: would remove $Path"
     }
+    elseif (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Remove-Item -LiteralPath $Path -Force
+    }
     else {
-        Remove-Item -Path $Path -Recurse -Force
+        Remove-Item -LiteralPath $Path -Recurse -Force
     }
 }
 
@@ -353,12 +368,13 @@ function Copy-TopLevelItem {
         [string]$DestinationPath
     )
 
-    if (-not (Test-Path $SourcePath)) {
+    $sourceItem = Get-Item -LiteralPath $SourcePath -Force -ErrorAction SilentlyContinue
+    if (-not $sourceItem) {
         return
     }
 
     Ensure-Directory -Path (Split-Path -Parent $DestinationPath)
-    if (Test-Path $DestinationPath) {
+    if (Get-Item -LiteralPath $DestinationPath -Force -ErrorAction SilentlyContinue) {
         Remove-PathIfExists -Path $DestinationPath
     }
 
@@ -366,8 +382,67 @@ function Copy-TopLevelItem {
         Write-Log "Dry run: would copy $SourcePath -> $DestinationPath"
     }
     else {
-        Copy-Item -Path $SourcePath -Destination $DestinationPath -Recurse -Force
+        Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath -Recurse -Force
     }
+}
+
+function Test-RepoSkillPackage {
+    param([System.IO.DirectoryInfo]$SourceItem)
+
+    $skillFile = Join-Path $SourceItem.FullName "SKILL.md"
+    if (-not (Test-Path -LiteralPath $skillFile) -or (Test-Path -LiteralPath (Join-Path $SourceItem.FullName ".git"))) {
+        return $false
+    }
+
+    $content = Get-Content -LiteralPath $skillFile -Raw
+    $frontmatterMatch = [regex]::Match(
+        $content,
+        '\A---\r?\n(?<frontmatter>.*?)\r?\n---(?:\r?\n|\z)',
+        [System.Text.RegularExpressions.RegexOptions]::Singleline
+    )
+    if (-not $frontmatterMatch.Success) {
+        return $false
+    }
+
+    $frontmatter = $frontmatterMatch.Groups['frontmatter'].Value
+    $nameMatch = [regex]::Match($frontmatter, '(?m)^name:\s*(?<value>[^\r\n]+?)\s*$')
+    $descriptionMatch = [regex]::Match($frontmatter, '(?m)^description:\s*(?<value>[^\r\n]+?)\s*$')
+    if (-not $nameMatch.Success -or -not $descriptionMatch.Success) {
+        return $false
+    }
+
+    $declaredName = $nameMatch.Groups['value'].Value.Trim().Trim('"').Trim("'")
+    $description = $descriptionMatch.Groups['value'].Value.Trim().Trim('"').Trim("'")
+    return (($declaredName -eq $SourceItem.Name) -and -not [string]::IsNullOrWhiteSpace($description))
+}
+
+function Install-RepoSkillCopy {
+    param(
+        [string]$SourcePath,
+        [string]$DestinationPath,
+        [string]$ArchivePath,
+        [string]$CopyLabel
+    )
+
+    $Script:RepoSkillCopyChanged = $false
+    $destinationItem = Get-Item -LiteralPath $DestinationPath -Force -ErrorAction SilentlyContinue
+    if ($destinationItem) {
+        if ((Test-Path -LiteralPath $DestinationPath) -and
+            (Get-PathSignature -Path $DestinationPath) -eq (Get-PathSignature -Path $SourcePath)) {
+            return
+        }
+
+        Copy-TopLevelItem -SourcePath $DestinationPath -DestinationPath $ArchivePath
+        if (Test-IsDryRun) {
+            Write-Log "Would preserve previous $CopyLabel copy: $(Split-Path $SourcePath -Leaf)"
+        }
+        else {
+            Write-Log "Preserved previous $CopyLabel copy: $(Split-Path $SourcePath -Leaf)"
+        }
+    }
+
+    Copy-TopLevelItem -SourcePath $SourcePath -DestinationPath $DestinationPath
+    $Script:RepoSkillCopyChanged = $true
 }
 
 function Get-PathSignature {
@@ -568,6 +643,81 @@ function Invoke-SkillSync {
                 Write-Log "Mirrored shared skill to $($assistant.Name): $($item.Name)" -Level Success
             }
         }
+    }
+}
+
+function Invoke-RepoSkillInstall {
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Stop"
+    try {
+        if (-not (Test-Path $Script:RepoSkillsPath)) {
+            throw "Repository skills directory not found: $($Script:RepoSkillsPath)"
+        }
+
+        Ensure-SharedSkillsDirectory
+        $timestamp = "$(Get-Date -Format 'yyyyMMdd_HHmmss')_$PID"
+        $repoSkillItems = @(
+            Get-ChildItem -LiteralPath $Script:RepoSkillsPath -Directory |
+                Where-Object { -not ($_.Name.StartsWith('.')) } |
+                Sort-Object Name
+        )
+
+        if ($repoSkillItems.Count -eq 0) {
+            throw "No repository skill packages found in $($Script:RepoSkillsPath)"
+        }
+
+        foreach ($sourceItem in $repoSkillItems) {
+            if (-not (Test-RepoSkillPackage -SourceItem $sourceItem)) {
+                throw "$($sourceItem.Name)/SKILL.md must have frontmatter with a matching name and non-empty description."
+            }
+        }
+
+        $updatedCount = 0
+        foreach ($sourceItem in $repoSkillItems) {
+            $skillName = $sourceItem.Name
+            $packageChanged = $false
+            $sharedPath = Join-Path $Script:SharedSkills.Source $skillName
+            $sharedArchive = Join-Path $Script:SharedSkills.Source ".conflicts\repo-install\$timestamp\shared\$skillName"
+            Install-RepoSkillCopy -SourcePath $sourceItem.FullName -DestinationPath $sharedPath -ArchivePath $sharedArchive -CopyLabel "shared"
+            if ($Script:RepoSkillCopyChanged) {
+                $packageChanged = $true
+            }
+
+            foreach ($assistant in $Script:Assistants | Where-Object { $_.Name -in @("codex", "claude") }) {
+                $skillRoot = Get-SkillRoot -Assistant $assistant
+                Ensure-Directory -Path $skillRoot
+                $destination = Join-Path $skillRoot $skillName
+                $localArchive = Join-Path $Script:SharedSkills.Source ".conflicts\repo-install\$timestamp\$($assistant.Name)\$skillName"
+                Install-RepoSkillCopy -SourcePath $sourceItem.FullName -DestinationPath $destination -ArchivePath $localArchive -CopyLabel $assistant.Name
+                if ($Script:RepoSkillCopyChanged) {
+                    $packageChanged = $true
+                }
+            }
+
+            if ($packageChanged) {
+                $updatedCount++
+                if (Test-IsDryRun) {
+                    Write-Log "Would install or update repository skill: $skillName"
+                }
+                else {
+                    Write-Log "Installed or updated repository skill: $skillName" -Level Success
+                }
+            }
+            else {
+                Write-Log "Repository skill already current: $skillName"
+            }
+        }
+
+        $currentCount = $repoSkillItems.Count - $updatedCount
+        if (Test-IsDryRun) {
+            Write-Log "Validated $($repoSkillItems.Count) repository skills; would update $updatedCount and leave $currentCount already current."
+        }
+        else {
+            Write-Log "Validated $($repoSkillItems.Count) repository skills; updated $updatedCount and left $currentCount already current." -Level Success
+        }
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
     }
 }
 
@@ -961,18 +1111,13 @@ function Invoke-GitSync {
 
 try {
     if (-not $Action) {
-        $Action = Get-MenuChoice -Title "Select Action" -Options @("Backup", "Restore", "Audit", "Sync-Skills", "Migrate-Skills")
+        $Action = Get-MenuChoice -Title "Select Action" -Options @("Backup", "Restore", "Audit", "Sync-Skills", "Migrate-Skills", "Install-Repo-Skills")
     }
 
     Write-Log "=== LLM Sync Started ==="
     if (Test-IsDryRun) {
         Write-Log "Dry run mode enabled. No files will be changed."
     }
-
-    $machineName = $env:COMPUTERNAME
-    $timestamp = Get-Date -Format "yyyy-MM-dd_HHmmss"
-    $subFolder = if ($Versioned -and $Action -eq "backup") { "${machineName}_$timestamp" } else { $machineName }
-    $backupRoot = Join-Path $Script:BaseBackupPath $subFolder
 
     Ensure-SharedSkillsDirectory
 
@@ -999,6 +1144,18 @@ try {
         Write-Log "=== LLM Sync Completed ===" -Level Success
         return
     }
+
+    if ($Action -eq "install-repo-skills") {
+        Invoke-RepoSkillInstall
+        Write-Log "=== LLM Sync Completed ===" -Level Success
+        return
+    }
+
+    Initialize-BackupConfiguration
+    $machineName = $env:COMPUTERNAME
+    $timestamp = Get-Date -Format "yyyy-MM-dd_HHmmss"
+    $subFolder = if ($Versioned -and $Action -eq "backup") { "${machineName}_$timestamp" } else { $machineName }
+    $backupRoot = Join-Path $Script:BaseBackupPath $subFolder
 
     if ($Force -or (Read-Host "Pull latest settings from Git? (y/n)") -eq 'y') {
         Invoke-GitSync -Action pull -TargetPath $Script:BaseBackupPath

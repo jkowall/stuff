@@ -6,9 +6,9 @@ This directory contains the backup and sync tooling for LLM and Plex data.
 
 | Script | Purpose |
 |--------|---------|
-| `LLM_Sync_Win.ps1` | Windows backup, restore, audit, and shared-skill mirror for Codex, Gemini, Claude, and Agents |
-| `LLM_Sync_Linux.sh` | Linux backup, restore, audit, and shared-skill mirror for Codex, Gemini, Claude, and Agents |
-| `LLM_Sync_Mac.sh` | macOS backup, restore, audit, and shared-skill mirror for Codex, Gemini, Claude, and Agents |
+| `LLM_Sync_Win.ps1` | Windows backup, restore, audit, shared-skill mirror, and repository-skill installer |
+| `LLM_Sync_Linux.sh` | Linux backup, restore, audit, shared-skill mirror, and repository-skill installer |
+| `LLM_Sync_Mac.sh` | macOS backup, restore, audit, shared-skill mirror, and repository-skill installer |
 | `plex_backup.ps1` | Plex backup workflow that stops services and archives data |
 
 ## LLM Sync Model
@@ -56,8 +56,17 @@ Behavior:
 - `audit` reports shared skills plus assistant-local duplicates
 - `sync-skills` builds the union of Codex and Claude skills in `~/.skills`
 - `sync-skills` mirrors the shared set back into `~/.codex/skills` and `~/.claude/skills` without deleting extra local skill folders
+- `install-repo-skills` installs every valid package from the repository's `skills/` directory into `~/.skills`, then mirrors just those packages to Codex and Claude
 - `migrate-skills` is a compatibility alias for `sync-skills` unless the explicit destructive flag is used
 - if a shared and local skill differ, the script uses the selected conflict policy and preserves conflict copies under `~/.skills/.conflicts/`
+
+`install-repo-skills` treats the checked-out repository version as authoritative for
+same-named packages. It preserves each differing shared or assistant-local copy under
+`~/.skills/.conflicts/repo-install/<timestamp>/` before replacement and never deletes
+unrelated skills. Before copying anything, it validates every package's frontmatter,
+matching directory/name, and non-empty description. Dry-run totals distinguish
+planned updates from already-current packages. Use the preview first when you have
+local customizations.
 
 ## Conflict Handling
 
@@ -74,12 +83,14 @@ Legacy destructive migration is opt-in only:
 
 Recommended workflow:
 
-1. Run `audit` first.
-2. Run `sync-skills` with `--dry-run` or `-DryRun`.
-3. Run real `sync-skills`.
-4. Run `backup` with dry-run.
-5. Run real `backup`.
-6. Inspect the private backup diff before pushing.
+1. Preview `install-repo-skills` when installing or updating repository skills.
+2. Run real `install-repo-skills` and restart the assistant session.
+3. Run `audit` first for the broader shared set.
+4. Run `sync-skills` with `--dry-run` or `-DryRun`.
+5. Run real `sync-skills`.
+6. Run `backup` with dry-run.
+7. Run real `backup`.
+8. Inspect the private backup diff before pushing.
 
 For normal backup and restore, keep the workflow conservative:
 
@@ -102,6 +113,8 @@ This keeps the LLM sync suite focused on portable Gemini config while avoiding n
 
 ```powershell
 .\LLM_Sync_Win.ps1 -Action audit
+.\LLM_Sync_Win.ps1 -Action install-repo-skills -DryRun
+.\LLM_Sync_Win.ps1 -Action install-repo-skills
 .\LLM_Sync_Win.ps1 -Action sync-skills -DryRun
 .\LLM_Sync_Win.ps1 -Action sync-skills -ConflictPolicy prefer-local
 .\LLM_Sync_Win.ps1 -Action backup -Versioned
@@ -112,6 +125,8 @@ This keeps the LLM sync suite focused on portable Gemini config while avoiding n
 
 ```bash
 ./LLM_Sync_Linux.sh audit
+./LLM_Sync_Linux.sh install-repo-skills --dry-run
+./LLM_Sync_Linux.sh install-repo-skills
 ./LLM_Sync_Linux.sh sync-skills --dry-run
 ./LLM_Sync_Linux.sh sync-skills --conflict-policy=prefer-shared
 ./LLM_Sync_Linux.sh backup
@@ -123,6 +138,8 @@ This keeps the LLM sync suite focused on portable Gemini config while avoiding n
 
 ```bash
 ./LLM_Sync_Mac.sh audit
+./LLM_Sync_Mac.sh install-repo-skills --dry-run
+./LLM_Sync_Mac.sh install-repo-skills
 ./LLM_Sync_Mac.sh sync-skills --dry-run
 ./LLM_Sync_Mac.sh sync-skills --conflict-policy=prefer-local
 ./LLM_Sync_Mac.sh backup
@@ -134,7 +151,7 @@ On macOS and Linux, the default machine folder now uses the short host name with
 
 ## Config Files
 
-These scripts expect config files in your private config repo:
+Backup and restore expect config files in your private config repo:
 
 - `C:\Users\<you>\Private\Configs\LLM_Sync_Win.json`
 - `~/Private/Configs/LLM_Sync_Linux.json`
@@ -158,16 +175,21 @@ Example Linux/macOS config:
 }
 ```
 
+`audit`, `sync-skills`, `migrate-skills`, and `install-repo-skills` are
+configuration-free and can run directly from a fresh checkout.
+
 ## Testing Strategy
 
 Safest order:
 
-1. `audit`
-2. `sync-skills` with dry-run
-3. real `sync-skills`
-4. `backup` with dry-run
-5. real `backup`
-6. inspect `git -C ~/Private/LLM diff`
-7. push
+1. `install-repo-skills` with dry-run when repository skills changed
+2. real `install-repo-skills`
+3. `audit`
+4. `sync-skills` with dry-run
+5. real `sync-skills`
+6. `backup` with dry-run
+7. real `backup`
+8. inspect `git -C ~/Private/LLM diff`
+9. push
 
 Use `restore` only after the backup tree looks correct.
