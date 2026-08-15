@@ -77,6 +77,64 @@ try {
     Assert-True `
         -Condition ($UpdaterSource.Contains('Get-NpmTrustedNativeRebuildArguments -NpmPrefix $NpmPrefix')) `
         -Message "Updater did not use the tested trusted-native npm rebuild arguments."
+
+    $UpdaterTokens = $null
+    $UpdaterParseErrors = $null
+    $UpdaterAst = [System.Management.Automation.Language.Parser]::ParseFile($UpdaterPath, [ref]$UpdaterTokens, [ref]$UpdaterParseErrors)
+    foreach ($FunctionName in @("Get-WingetPackageServiceState", "Restore-WingetPackageServiceState")) {
+        $FunctionAst = $UpdaterAst.Find({
+                param($Node)
+                $Node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -eq $FunctionName
+            }, $true)
+        Assert-True -Condition ($null -ne $FunctionAst) -Message "Updater did not define $FunctionName."
+        Invoke-Expression $FunctionAst.Extent.Text
+    }
+
+    $script:MockService = $null
+    $script:MockStartServiceCalls = 0
+    $script:MockStartServiceFailure = $false
+    function Get-Service {
+        [CmdletBinding()]
+        param([string]$Name)
+
+        if ($script:MockService -and $script:MockService.Name -eq $Name) { return $script:MockService }
+        return $null
+    }
+    function Start-Service {
+        [CmdletBinding()]
+        param([string]$Name)
+
+        $script:MockStartServiceCalls++
+        if ($script:MockStartServiceFailure) { throw "mock service start failure" }
+    }
+
+    Assert-Equal -Expected $null -Actual (Get-WingetPackageServiceState -PackageId "Beeper.Beeper") -Message "Unrelated Winget package unexpectedly mapped to a service."
+
+    $script:MockService = [pscustomobject]@{ Name = "cloudflared"; Status = "Running" }
+    $script:MockService | Add-Member -MemberType ScriptMethod -Name WaitForStatus -Value { param($DesiredStatus, $Timeout) $this.Status = "$DesiredStatus" }
+    $script:MockService | Add-Member -MemberType ScriptMethod -Name Refresh -Value { }
+    $CloudflaredState = Get-WingetPackageServiceState -PackageId "Cloudflare.cloudflared"
+    Assert-Equal -Expected "cloudflared" -Actual $CloudflaredState.Name -Message "Cloudflared package mapped to the wrong service."
+    Assert-Equal -Expected $true -Actual $CloudflaredState.WasRunning -Message "Cloudflared running state was not captured."
+    Assert-Equal -Expected "Running" -Actual (Restore-WingetPackageServiceState -ServiceState $CloudflaredState) -Message "An already-running cloudflared service was not preserved."
+    Assert-Equal -Expected 0 -Actual $script:MockStartServiceCalls -Message "An already-running cloudflared service was restarted unnecessarily."
+
+    $script:MockService.Status = "Stopped"
+    Assert-Equal -Expected "Restored" -Actual (Restore-WingetPackageServiceState -ServiceState $CloudflaredState) -Message "A stopped cloudflared service was not restored."
+    Assert-Equal -Expected 1 -Actual $script:MockStartServiceCalls -Message "Cloudflared service restore did not invoke Start-Service exactly once."
+    Assert-Equal -Expected "Running" -Actual $script:MockService.Status -Message "Cloudflared service did not reach the Running state after restore."
+
+    $script:MockService.Status = "Stopped"
+    $script:MockStartServiceFailure = $true
+    $RestoreFailed = $false
+    try {
+        Restore-WingetPackageServiceState -ServiceState $CloudflaredState | Out-Null
+    }
+    catch {
+        $RestoreFailed = $true
+    }
+    Assert-Equal -Expected $true -Actual $RestoreFailed -Message "Cloudflared service start failure was not surfaced."
+
     $MeteredBlockStart = $UpdaterSource.IndexOf("if (Test-DataSaver)", [System.StringComparison]::Ordinal)
     Assert-True -Condition ($MeteredBlockStart -ge 0) -Message "Updater did not contain the metered-connection branch."
     $MeteredBlockExit = $UpdaterSource.IndexOf("exit `$FinalExitCode", $MeteredBlockStart, [System.StringComparison]::Ordinal)

@@ -244,6 +244,53 @@ function Get-WingetUpgradeIds {
     return @(ConvertFrom-WingetUpgradeOutput -Output @($Output) -Source $Source -ExcludePackageIds $ExcludePackageIds)
 }
 
+function Get-WingetPackageServiceState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PackageId
+    )
+
+    $ServiceName = switch ($PackageId) {
+        "Cloudflare.cloudflared" { "cloudflared" }
+        default { $null }
+    }
+
+    if (-not $ServiceName) { return $null }
+
+    $Service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if (-not $Service) { return $null }
+
+    return [pscustomobject]@{
+        Name       = $Service.Name
+        WasRunning = ("$($Service.Status)" -eq "Running")
+    }
+}
+
+function Restore-WingetPackageServiceState {
+    [CmdletBinding()]
+    param(
+        $ServiceState,
+        [timespan]$Timeout = ([timespan]::FromSeconds(30))
+    )
+
+    if (-not $ServiceState -or -not $ServiceState.WasRunning) { return "Skipped" }
+
+    $Service = Get-Service -Name $ServiceState.Name -ErrorAction Stop
+    if ("$($Service.Status)" -eq "Running") { return "Running" }
+
+    Start-Service -Name $ServiceState.Name -ErrorAction Stop
+    $Service = Get-Service -Name $ServiceState.Name -ErrorAction Stop
+    $Service.WaitForStatus("Running", $Timeout)
+    $Service.Refresh()
+
+    if ("$($Service.Status)" -ne "Running") {
+        throw "Service '$($ServiceState.Name)' did not reach the Running state within $([int]$Timeout.TotalSeconds) seconds."
+    }
+
+    return "Restored"
+}
+
 function Invoke-WingetExplicitUpgrades {
     param(
         [Parameter(Mandatory = $true)]
@@ -258,11 +305,35 @@ function Invoke-WingetExplicitUpgrades {
     $NoLongerApplicable = New-Object System.Collections.Generic.List[string]
 
     foreach ($PackageId in ($PackageIds | Where-Object { $_ } | Select-Object -Unique)) {
+        $ServiceState = Get-WingetPackageServiceState -PackageId $PackageId
+        if ($ServiceState -and $ServiceState.WasRunning) {
+            Write-Log "Preserving the running state of service '$($ServiceState.Name)' during the $PackageId upgrade." -Level Info
+        }
+
         Write-Log "Running: winget upgrade --id $PackageId -e --source $Source --include-unknown --accept-package-agreements --accept-source-agreements" -Level Info
         & $WingetPath.Source upgrade --id $PackageId -e --source $Source --include-unknown --accept-package-agreements --accept-source-agreements
         $WingetExitCode = $LASTEXITCODE
 
-        if ($WingetExitCode -eq 0 -or $WingetExitCode -eq $null) {
+        $ServiceRestoreFailure = $null
+        try {
+            $ServiceRestoreResult = Restore-WingetPackageServiceState -ServiceState $ServiceState
+            if ($ServiceRestoreResult -eq "Restored") {
+                Write-Log "Restored service '$($ServiceState.Name)' after the $PackageId upgrade." -Level Success
+            }
+            elseif ($ServiceRestoreResult -eq "Running") {
+                Write-Log "Service '$($ServiceState.Name)' remained running after the $PackageId upgrade." -Level Info
+            }
+        }
+        catch {
+            $ServiceRestoreFailure = $_.Exception.Message
+            Write-Log "Could not restore service '$($ServiceState.Name)' after the $PackageId upgrade: $ServiceRestoreFailure" -Level Error
+        }
+
+        if ($ServiceRestoreFailure) {
+            $Failed.Add($PackageId)
+            Write-Log "Explicit upgrade for $PackageId returned exit code '$WingetExitCode', but its pre-upgrade service state was not restored." -Level Warning
+        }
+        elseif ($WingetExitCode -eq 0 -or $WingetExitCode -eq $null) {
             $Succeeded++
             Write-Log "Explicit upgrade completed for $PackageId" -Level Success
         }
