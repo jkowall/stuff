@@ -61,9 +61,9 @@ The `system/` directory is organized by platform: `macos/`, `windows/`, and `lin
 |--------|-------------|
 | [`audit_apps.sh`](system/macos/audit_apps.sh) | Audits installed GUI applications and identifies their source (Homebrew, App Store, or Manual). |
 | [`sync_apps.sh`](system/macos/sync_apps.sh) | Compares an audit file with local state and installs missing managed apps. |
-| [`Update-AllPackages_Mac.sh`](system/macos/Update-AllPackages_Mac.sh) | Weekly updater for Homebrew, Mac App Store (`mas`), MacUpdater, generic npm packages, pipx apps when installed, and rustup. It skips bulk pip updates and tracks Codex alpha and Claude next independently under `~/.local`. |
+| [`Update-AllPackages_Mac.sh`](system/macos/Update-AllPackages_Mac.sh) | Weekly updater for Homebrew, Mac App Store (`mas`), Claude Code, MacUpdater, generic npm packages, pipx apps when installed, and rustup. It tracks Codex alpha under `~/.local`, updates Anthropic's native Claude Code installation on its configured channel, and reports how Claude Desktop is updated. |
 | [`Setup-PackageUpdateTasks_Mac.sh`](system/macos/Setup-PackageUpdateTasks_Mac.sh) | Installs/removes the macOS weekly launchd job for updates. |
-| [`test-package-update-scripts.sh`](system/macos/tests/test-package-update-scripts.sh) | Offline regression tests for updater status, host-scoped log retention, and launchd rendering. |
+| [`test-package-update-scripts.sh`](system/macos/tests/test-package-update-scripts.sh) | Offline regression tests for updater status, Claude Code handling, host-scoped log retention, and launchd rendering. |
 
 #### Windows (`system/windows/`)
 
@@ -87,6 +87,8 @@ The `system/` directory is organized by platform: `macos/`, `windows/`, and `lin
 | [`Setup-PackageUpdateTasks_Linux.sh`](system/linux/Setup-PackageUpdateTasks_Linux.sh) | Installs/removes the Linux weekly cron schedule. |
 
 Package updater scripts no longer schedule themselves when you run them manually. Use the platform-specific setup script to install or remove the weekly schedule:
+
+For the freshest Claude Code releases on macOS, migrate once to Anthropic's native `latest` installation with `claude install latest`. The scheduled updater then runs `~/.local/bin/claude update` and verifies the resulting version. Claude Desktop remains separate and uses its built-in auto-updater unless installed as the Homebrew `claude` cask.
 
 - Windows: `system/windows/Setup-PackageUpdateTasks.ps1`
 - Linux: `system/linux/Setup-PackageUpdateTasks_Linux.sh`

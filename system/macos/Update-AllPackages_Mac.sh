@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # SYNOPSIS
-#     Weekly package update script for Homebrew, Mac App Store, MacUpdater, npm, pipx, and rustup on macOS.
+#     Weekly package update script for Homebrew, Mac App Store, Claude Code, MacUpdater, npm, pipx, and rustup on macOS.
 # DESCRIPTION
-#     Updates packages and apps from Homebrew, Mac App Store (via mas), MacUpdater, npm, pipx, and rustup-managed Rust toolchains.
+#     Updates packages and apps from Homebrew, Mac App Store (via mas), Anthropic's native Claude Code updater,
+#     MacUpdater, npm, pipx, and rustup-managed Rust toolchains.
 #     Logs all output to a timestamped file and shows desktop notifications.
 
 # ============================================================================
@@ -29,14 +30,14 @@ PENDING_FILE="${SCRIPT_DIR}/pending-interactive-update"
 MACUPDATER_CLIENT="/Applications/MacUpdater.app/Contents/Resources/macupdater_client"
 MACUPDATER_SCAN_TIMEOUT_SECONDS=120
 MACUPDATER_APP_TIMEOUT_SECONDS=900
+CLAUDE_CODE_BINARY="${CLAUDE_CODE_BINARY:-${HOME}/.local/bin/claude}"
+CLAUDE_DESKTOP_APP="${CLAUDE_DESKTOP_APP:-/Applications/Claude.app}"
 BREW_UPDATE_MAX_ATTEMPTS=2
 BREW_UPDATE_RETRY_DELAY_SECONDS=15
 UPDATE_LOCK_FILE="/tmp/${SCRIPT_NAME}.${UID}.lock"
 NPM_GENERIC_ALLOWED_SCRIPTS="@github/keytar,node-pty"
-NPM_CHANNEL_ALLOWED_SCRIPTS="@anthropic-ai/claude-code"
 NPM_CHANNEL_PACKAGES=(
     "@openai/codex@alpha"
-    "@anthropic-ai/claude-code@next"
 )
 
 while [[ $# -gt 0 ]]; do
@@ -65,6 +66,8 @@ BREW_STATUS="Skipped"
 MAS_STATUS="Skipped"
 MACUPDATER_STATUS="Skipped"
 NPM_STATUS="Skipped"
+CLAUDE_CODE_STATUS="Skipped"
+CLAUDE_DESKTOP_STATUS="Skipped"
 PIP_STATUS="Skipped"
 PIPX_STATUS="Skipped"
 RUSTUP_STATUS="Skipped"
@@ -253,56 +256,6 @@ acquire_update_lock() {
     esac
 }
 
-migrate_claude_code_to_latest() {
-    if ! brew list --cask claude-code >/dev/null 2>&1; then
-        return 0
-    fi
-
-    log "Info" "Migrating Claude Code from the stable cask to claude-code@latest."
-    log "Info" "Running: brew fetch --cask claude-code@latest"
-    if ! brew fetch --cask claude-code@latest 2>&1 | tee -a "$LOG_FILE"; then
-        log "Warning" "Unable to prefetch claude-code@latest. Keeping the stable cask installed."
-        return 1
-    fi
-
-    log "Info" "Running: brew uninstall --cask claude-code"
-    if ! brew uninstall --cask claude-code 2>&1 | tee -a "$LOG_FILE"; then
-        log "Warning" "Unable to uninstall the stable Claude Code cask."
-        return 1
-    fi
-
-    log "Info" "Running: brew install --cask claude-code@latest"
-    if brew install --cask claude-code@latest 2>&1 | tee -a "$LOG_FILE"; then
-        log "Success" "Claude Code now tracks the latest Homebrew release channel."
-        return 0
-    fi
-
-    log "Warning" "Unable to install claude-code@latest. Attempting to restore the stable cask."
-    brew uninstall --cask --force claude-code@latest 2>&1 | tee -a "$LOG_FILE" || true
-    if brew install --cask claude-code 2>&1 | tee -a "$LOG_FILE"; then
-        log "Warning" "Restored the stable Claude Code cask after the migration failed."
-    else
-        log "Error" "Unable to restore the stable Claude Code cask. Manual repair is required."
-        return 2
-    fi
-    return 1
-}
-
-update_claude_desktop_cask() {
-    if ! brew list --cask claude >/dev/null 2>&1; then
-        return 0
-    fi
-
-    log "Info" "Running: brew upgrade --cask --greedy-auto-updates claude"
-    if brew upgrade --cask --greedy-auto-updates claude 2>&1 | tee -a "$LOG_FILE"; then
-        log "Success" "Claude Desktop is up-to-date."
-        return 0
-    fi
-
-    log "Warning" "Claude Desktop update encountered issues."
-    return 1
-}
-
 update_brew() {
     if ! command -v brew >/dev/null 2>&1; then
         log "Warning" "Homebrew not found. Skipping."
@@ -336,27 +289,12 @@ update_brew() {
     fi
 
     local brew_warning=0
-    local brew_error=0
-    migrate_claude_code_to_latest
-    local claude_code_status=$?
-    case "$claude_code_status" in
-        1) brew_warning=1 ;;
-        2) brew_error=1 ;;
-    esac
 
     log "Info" "Running: brew upgrade"
     if ! brew upgrade 2>&1 | tee -a "$LOG_FILE"; then
-        if [ "$brew_error" -eq 1 ]; then
-            BREW_STATUS="Error"
-        else
-            BREW_STATUS="Warning"
-        fi
+        BREW_STATUS="Warning"
         log "Warning" "Brew upgrade encountered issues."
         return
-    fi
-
-    if ! update_claude_desktop_cask; then
-        brew_warning=1
     fi
 
     log "Info" "Running: brew cleanup"
@@ -365,16 +303,85 @@ update_brew() {
         log "Warning" "Brew cleanup encountered issues."
     fi
 
-    if [ "$brew_error" -eq 1 ]; then
-        BREW_STATUS="Error"
-        log "Error" "Homebrew updates completed, but Claude Code requires manual repair."
-    elif [ "$brew_warning" -eq 0 ]; then
+    if [ "$brew_warning" -eq 0 ]; then
         BREW_STATUS="Success"
         log "Success" "Homebrew updates completed successfully"
     else
         BREW_STATUS="Warning"
         log "Warning" "Homebrew updates completed with one or more warnings."
     fi
+}
+
+update_claude_code() {
+    if [ ! -x "$CLAUDE_CODE_BINARY" ]; then
+        log "Info" "Anthropic-native Claude Code not found at ${CLAUDE_CODE_BINARY}. Skipping."
+        return 0
+    fi
+
+    log "Info" "============================================================"
+    log "Info" "STARTING CLAUDE CODE UPDATE"
+    log "Info" "============================================================"
+
+    local current_version=""
+    current_version="$("$CLAUDE_CODE_BINARY" --version 2>>"$LOG_FILE")" || true
+    if [ -n "$current_version" ]; then
+        current_version="${current_version%%$'\n'*}"
+        log "Info" "Current Claude Code: $current_version"
+    fi
+
+    log "Info" "Running: ${CLAUDE_CODE_BINARY} update"
+    if ! "$CLAUDE_CODE_BINARY" update 2>&1 | tee -a "$LOG_FILE"; then
+        CLAUDE_CODE_STATUS="Warning"
+        log "Warning" "Claude Code native update encountered issues."
+        return 1
+    fi
+
+    local updated_version=""
+    if ! updated_version="$("$CLAUDE_CODE_BINARY" --version 2>>"$LOG_FILE")" || [ -z "$updated_version" ]; then
+        CLAUDE_CODE_STATUS="Warning"
+        log "Warning" "Claude Code updated, but version verification failed."
+        return 1
+    fi
+
+    updated_version="${updated_version%%$'\n'*}"
+    CLAUDE_CODE_STATUS="Success"
+    log "Success" "Claude Code is current on the configured release channel: $updated_version"
+}
+
+update_or_audit_claude_desktop() {
+    if command -v brew >/dev/null 2>&1 && brew list --cask claude >/dev/null 2>&1; then
+        log "Info" "Running: brew upgrade --cask --greedy-auto-updates claude"
+        if brew upgrade --cask --greedy-auto-updates claude 2>&1 | tee -a "$LOG_FILE"; then
+            CLAUDE_DESKTOP_STATUS="Success"
+            log "Success" "Claude Desktop is up-to-date through Homebrew."
+            return 0
+        fi
+
+        CLAUDE_DESKTOP_STATUS="Warning"
+        log "Warning" "Claude Desktop Homebrew update encountered issues."
+        return 1
+    fi
+
+    if [ ! -d "$CLAUDE_DESKTOP_APP" ]; then
+        log "Info" "Claude Desktop is not installed. Skipping."
+        return 0
+    fi
+
+    local desktop_version="unknown"
+    desktop_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${CLAUDE_DESKTOP_APP}/Contents/Info.plist" 2>/dev/null)" || desktop_version="unknown"
+
+    local desktop_auto_updates_disabled=""
+    desktop_auto_updates_disabled="$(/usr/bin/defaults read com.anthropic.claudefordesktop disableAutoUpdates 2>/dev/null)" || true
+    case "$desktop_auto_updates_disabled" in
+        1|true|TRUE|yes|YES)
+            CLAUDE_DESKTOP_STATUS="Warning"
+            log "Warning" "Claude Desktop ${desktop_version} is installed, but its vendor auto-updater is disabled."
+            return 1
+            ;;
+    esac
+
+    CLAUDE_DESKTOP_STATUS="Auto-update"
+    log "Info" "Claude Desktop ${desktop_version} uses Anthropic's built-in auto-updater; no supported headless update command is available."
 }
 
 update_mas() {
@@ -646,6 +653,7 @@ managed_packages = {
     for package_spec in sys.argv[1:]
 }
 managed_packages.add("npm")
+managed_packages.add("@anthropic-ai/claude-code")
 
 for package, versions in data.items():
     if package in managed_packages:
@@ -690,7 +698,6 @@ for package, versions in data.items():
         local binary_name=""
         case "$package_name" in
             "@openai/codex") binary_name="codex" ;;
-            "@anthropic-ai/claude-code") binary_name="claude" ;;
             *)
                 failed=$((failed + 1))
                 log "Warning" "No executable health check is configured for NPM channel package: $package_name"
@@ -717,7 +724,7 @@ for package, versions in data.items():
 
         attempted=$((attempted + 1))
         log "Info" "Updating NPM channel package in ${NPM_CHANNEL_PREFIX}: $package_spec"
-        if npm install -g --prefix "$NPM_CHANNEL_PREFIX" --strict-allow-scripts --allow-scripts="$NPM_CHANNEL_ALLOWED_SCRIPTS" "$package_spec" 2>&1 | tee -a "$LOG_FILE" \
+        if npm install -g --prefix "$NPM_CHANNEL_PREFIX" --strict-allow-scripts "$package_spec" 2>&1 | tee -a "$LOG_FILE" \
             && verify_npm_channel_package "$package_name" "$channel_version" "$binary_path"; then
             log "Success" "NPM channel package updated and verified: ${package_name}@${channel_version}"
         else
@@ -825,6 +832,8 @@ show_summary() {
         "App Store: $MAS_STATUS"
         "MacUpdater: $MACUPDATER_STATUS"
         "NPM:       $NPM_STATUS"
+        "Claude Code: $CLAUDE_CODE_STATUS"
+        "Claude Desktop: $CLAUDE_DESKTOP_STATUS"
         "PIP:       $PIP_STATUS"
         "PIPX:      $PIPX_STATUS"
         "Rustup:    $RUSTUP_STATUS"
@@ -835,6 +844,8 @@ show_summary() {
         "$MAS_STATUS"
         "$MACUPDATER_STATUS"
         "$NPM_STATUS"
+        "$CLAUDE_CODE_STATUS"
+        "$CLAUDE_DESKTOP_STATUS"
         "$PIP_STATUS"
         "$PIPX_STATUS"
         "$RUSTUP_STATUS"
@@ -969,13 +980,15 @@ fi
 cleanup_logs
 
 # Show start notification
-show_notification "Package Updates" "Starting updates for Homebrew, App Store, MacUpdater, npm, pipx, and rustup..."
+show_notification "Package Updates" "Starting updates for Homebrew, App Store, Claude Code, MacUpdater, npm, pipx, and rustup..."
 
 # Run Updates
 update_brew
+update_or_audit_claude_desktop
 update_mas
 update_macupdater_apps
 update_npm
+update_claude_code
 update_pip
 update_pipx
 update_rustup

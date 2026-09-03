@@ -36,6 +36,10 @@ assert_file_absent() {
     [ ! -e "$1" ] || fail "Expected path to be absent: $1"
 }
 
+assert_files_equal() {
+    cmp -s "$1" "$2" || fail "Expected files to match: $1 and $2"
+}
+
 assert_contains() {
     local file="$1"
     local text="$2"
@@ -83,6 +87,8 @@ test_summary_exit_codes() (
         MAS_STATUS="Skipped"
         MACUPDATER_STATUS="Success"
         NPM_STATUS="Success"
+        CLAUDE_CODE_STATUS="Success"
+        CLAUDE_DESKTOP_STATUS="Auto-update"
         PIP_STATUS="Skipped"
         PIPX_STATUS="Success"
         RUSTUP_STATUS="Success"
@@ -116,6 +122,54 @@ test_summary_exit_codes() (
     BREW_STATUS="Error"
     NPM_STATUS="Warning"
     run_summary_case "1" "Package Updates Completed with Errors"
+)
+
+test_claude_code_update_status() (
+    source "$UPDATER_SCRIPT"
+
+    local fixture_dir="${TEST_ROOT}/claude update"
+    local fake_claude="${fixture_dir}/claude"
+    local calls_file="${fixture_dir}/calls"
+    mkdir -p "$fixture_dir"
+    : > "$calls_file"
+    LOG_FILE="${fixture_dir}/updater.log"
+    : > "$LOG_FILE"
+
+    cat > "$fake_claude" <<'MOCK'
+#!/bin/bash
+printf '%s\n' "$1" >> "$CLAUDE_CALLS_FILE"
+case "$1" in
+    --version)
+        printf '2.1.259 (Claude Code)\n'
+        ;;
+    update)
+        if [ "${CLAUDE_UPDATE_FAIL:-0}" -eq 1 ]; then
+            printf 'simulated update failure\n' >&2
+            exit 1
+        fi
+        printf 'Claude Code is up to date\n'
+        ;;
+esac
+MOCK
+    chmod 755 "$fake_claude"
+
+    CLAUDE_CODE_BINARY="$fake_claude"
+    CLAUDE_CALLS_FILE="$calls_file"
+    export CLAUDE_CALLS_FILE
+    CLAUDE_CODE_STATUS="Skipped"
+    update_claude_code > "${fixture_dir}/success.out"
+
+    assert_eq "Success" "$CLAUDE_CODE_STATUS" "Claude Code successful update status"
+    assert_contains "$calls_file" "update"
+    assert_contains "$calls_file" "--version"
+
+    CLAUDE_UPDATE_FAIL=1
+    export CLAUDE_UPDATE_FAIL
+    CLAUDE_CODE_STATUS="Skipped"
+    if update_claude_code > "${fixture_dir}/failure.out"; then
+        fail "Expected Claude Code update failure"
+    fi
+    assert_eq "Warning" "$CLAUDE_CODE_STATUS" "Claude Code failed update status"
 )
 
 test_host_scoped_log_retention() (
@@ -206,6 +260,7 @@ MOCK
     install_schedule > "${TEST_ROOT}/default-setup.out"
 
     /usr/bin/plutil -lint "$PLIST_PATH" >/dev/null
+    assert_files_equal "$UPDATER_SCRIPT" "$CACHED_UPDATE_SCRIPT"
     assert_not_contains "$PLIST_PATH" "<string>--interactive</string>"
     assert_contains "$PLIST_PATH" "<key>Weekday</key>"
     assert_contains "$PLIST_PATH" "<integer>6</integer>"
@@ -255,10 +310,14 @@ MOCK
 
 assert_contains "$UPDATER_SCRIPT" 'if [ "${BASH_SOURCE[0]}" = "$0" ]; then'
 assert_contains "$SETUP_SCRIPT" 'if [ "${BASH_SOURCE[0]}" = "$0" ]; then'
+assert_contains "$UPDATER_SCRIPT" 'managed_packages.add("@anthropic-ai/claude-code")'
+assert_not_contains "$UPDATER_SCRIPT" '@anthropic-ai/claude-code@next'
 test_sourcing_does_not_create_log_directory
 printf 'PASS: updater sourcing has no filesystem writes\n'
 test_summary_exit_codes
 printf 'PASS: summary exit statuses\n'
+test_claude_code_update_status
+printf 'PASS: Claude Code native update statuses\n'
 test_host_scoped_log_retention
 printf 'PASS: host-scoped path-safe log retention\n'
 test_launchd_rendering

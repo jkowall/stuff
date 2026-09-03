@@ -14,9 +14,11 @@ This directory contains system automation and maintenance scripts, organized by 
 |--------|-------------|
 | `audit_apps.sh` | Audits installed GUI applications and identifies their source (Brew, MAS, or Manual). |
 | `sync_apps.sh` | Compares an audit file with local state and installs missing managed apps. |
-| `Update-AllPackages_Mac.sh` | Weekly updater for Homebrew, Mac App Store (`mas`), MacUpdater, generic npm packages, pipx apps when installed, and rustup. It skips bulk pip updates and tracks Codex alpha and Claude next independently under `~/.local`. |
+| `Update-AllPackages_Mac.sh` | Weekly updater for Homebrew, Mac App Store (`mas`), Claude Code, MacUpdater, generic npm packages, pipx apps when installed, and rustup. It tracks Codex alpha under `~/.local`, updates Anthropic's native Claude Code installation on its configured channel, and reports how Claude Desktop is updated. |
 | `Setup-PackageUpdateTasks_Mac.sh` | Installs/removes the macOS weekly launchd job for updates. |
-| `tests/test-package-update-scripts.sh` | Dependency-free offline regression tests for updater status, host-scoped log retention, and launchd rendering. |
+| `tests/test-package-update-scripts.sh` | Dependency-free offline regression tests for updater status, Claude Code handling, host-scoped log retention, and launchd rendering. |
+
+For the freshest Claude Code releases, migrate once to Anthropic's native `latest` installation with `claude install latest`. The scheduled updater then runs `~/.local/bin/claude update` and verifies the resulting version. Claude Desktop is separate: direct installations use Anthropic's built-in auto-updater, while a Homebrew-managed `claude` cask is upgraded through Homebrew.
 
 ## Windows Scripts (`system/windows/`)
 
