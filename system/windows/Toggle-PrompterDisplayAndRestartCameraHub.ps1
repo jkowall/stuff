@@ -1,21 +1,34 @@
 <#
 .SYNOPSIS
-Toggles the Elgato Prompter display and restarts Camera Hub after turning it off.
+Toggles the Elgato Prompter display and verifies the requested state.
 
 .DESCRIPTION
 Camera Hub exposes the same local JSON-RPC websocket used by the Stream Deck
-Camera Hub plugin. This script toggles the Prompter "enablePrompter" property
-and then restarts Camera Hub when the new state is off, which works around the
-Camera Hub hang that can follow powering the Prompter display down.
+Camera Hub plugin. Toggle is the default; use -Action On or -Action Off to
+request a specific state. Retries preserve the original target, including when a command
+succeeds but its response is lost. After a restart the script waits for Camera
+Hub and reapplies the target if necessary. Verification checks Camera Hub's
+reported state; it cannot confirm the physical panel is dark.
+
+.EXAMPLE
+.\Toggle-PrompterDisplayAndRestartCameraHub.ps1
+
+.EXAMPLE
+.\Toggle-PrompterDisplayAndRestartCameraHub.ps1 -Action On
 #>
 
 [CmdletBinding()]
 param(
+    [ValidateSet('Off', 'On', 'Toggle')]
+    [string]$Action = 'Toggle',
+
     [ValidateSet('Off', 'Always', 'Never')]
     [string]$RestartWhen = 'Off',
 
+    [ValidateRange(0, 60000)]
     [int]$AfterToggleDelayMilliseconds = 1500,
 
+    [ValidateRange(100, 10000)]
     [int]$ResponseTimeoutMilliseconds = 2500,
 
     [switch]$DryRun
@@ -46,27 +59,34 @@ function Receive-WebSocketText {
     $buffer = [byte[]]::new(65536)
     $stream = [IO.MemoryStream]::new()
 
-    do {
-        $cts = [Threading.CancellationTokenSource]::new()
-        $cts.CancelAfter($TimeoutMilliseconds)
+    $deadline = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        do {
+            $remaining = $TimeoutMilliseconds - [int]$deadline.ElapsedMilliseconds
+            if ($remaining -le 0) { throw 'Camera Hub response timed out.' }
+            $cts = [Threading.CancellationTokenSource]::new()
+            $cts.CancelAfter($remaining)
 
-        try {
-            $segment = [ArraySegment[byte]]::new($buffer)
-            $result = $WebSocket.ReceiveAsync($segment, $cts.Token).GetAwaiter().GetResult()
-        } finally {
-            $cts.Dispose()
-        }
+            try {
+                $segment = [ArraySegment[byte]]::new($buffer)
+                $result = $WebSocket.ReceiveAsync($segment, $cts.Token).GetAwaiter().GetResult()
+            } finally {
+                $cts.Dispose()
+            }
 
-        if ($result.MessageType -eq [Net.WebSockets.WebSocketMessageType]::Close) {
-            throw 'Camera Hub websocket closed before returning a response.'
-        }
+            if ($result.MessageType -eq [Net.WebSockets.WebSocketMessageType]::Close) {
+                throw 'Camera Hub websocket closed before returning a response.'
+            }
 
-        if ($result.Count -gt 0) {
-            $stream.Write($buffer, 0, $result.Count)
-        }
-    } while (-not $result.EndOfMessage)
+            if ($result.Count -gt 0) {
+                $stream.Write($buffer, 0, $result.Count)
+            }
+        } while (-not $result.EndOfMessage)
 
-    [Text.Encoding]::UTF8.GetString($stream.ToArray())
+        [Text.Encoding]::UTF8.GetString($stream.ToArray())
+    } finally {
+        $stream.Dispose()
+    }
 }
 
 function Invoke-CameraHubRpc {
@@ -82,6 +102,8 @@ function Invoke-CameraHubRpc {
 
     foreach ($port in 1834..1843) {
         $websocket = [Net.WebSockets.ClientWebSocket]::new()
+        $connectTimeout = $null
+        $requestTimeout = $null
 
         try {
             $connectTimeout = [Threading.CancellationTokenSource]::new()
@@ -100,15 +122,20 @@ function Invoke-CameraHubRpc {
 
             $json = $request | ConvertTo-Json -Compress -Depth 10
             $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+            $requestTimeout = [Threading.CancellationTokenSource]::new()
+            $requestTimeout.CancelAfter($ResponseTimeoutMilliseconds)
+            $deadline = [Diagnostics.Stopwatch]::StartNew()
             $websocket.SendAsync(
                 [ArraySegment[byte]]::new($bytes),
                 [Net.WebSockets.WebSocketMessageType]::Text,
                 $true,
-                [Threading.CancellationToken]::None
+                $requestTimeout.Token
             ).GetAwaiter().GetResult()
 
             while ($true) {
-                $text = Receive-WebSocketText -WebSocket $websocket -TimeoutMilliseconds $ResponseTimeoutMilliseconds
+                $remaining = $ResponseTimeoutMilliseconds - [int]$deadline.ElapsedMilliseconds
+                if ($remaining -le 0) { throw 'Camera Hub RPC response timed out.' }
+                $text = Receive-WebSocketText -WebSocket $websocket -TimeoutMilliseconds $remaining
                 $response = $text | ConvertFrom-Json
 
                 $responses = if ($response -is [array]) { $response } else { @($response) }
@@ -133,6 +160,7 @@ function Invoke-CameraHubRpc {
             if ($connectTimeout) {
                 $connectTimeout.Dispose()
             }
+            if ($requestTimeout) { $requestTimeout.Dispose() }
             $websocket.Dispose()
         }
     }
@@ -149,7 +177,7 @@ function Restart-CameraHub {
     & $restartScript *> $null
 }
 
-function Toggle-PrompterDisplay {
+function Get-PrompterValue {
     $properties = (Invoke-CameraHubRpc -Method 'getSupportedPrompterProperties').Result
     $enablePrompter = $properties | Where-Object { $_.propertyID -eq 17 } | Select-Object -First 1
 
@@ -157,39 +185,98 @@ function Toggle-PrompterDisplay {
         throw 'Camera Hub did not report the Prompter enable property.'
     }
 
-    $currentValue = [int]$enablePrompter.value
-    $newValue = if ($currentValue -eq 0) { 1 } else { 0 }
-
-    Write-Log "Prompter display current=$currentValue new=$newValue dryRun=$DryRun"
-
-    if ($DryRun) {
-        return [pscustomobject]@{
-            CurrentValue = $currentValue
-            NewValue = $newValue
-            RestartCameraHub = $false
-        }
+    if ($null -eq $enablePrompter.value -or [string]$enablePrompter.value -notin @('0', '1')) {
+        throw 'Camera Hub returned an invalid Prompter enable value.'
     }
+    return [int]$enablePrompter.value
+}
+
+function Wait-PrompterReady {
+    # Allow startup and USB discovery to finish instead of relying on a fixed sleep.
+    $deadline = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        try { return Get-PrompterValue } catch {
+            Write-Log "Waiting for Camera Hub: $($_.Exception.Message)"
+        }
+        Start-Sleep -Milliseconds 1000
+    } while ($deadline.Elapsed.TotalSeconds -lt 45)
+    throw 'Camera Hub/Prompter did not become ready after restarting.'
+}
+
+function Set-PrompterValue {
+    param([int]$Value)
 
     $result = (Invoke-CameraHubRpc -Method 'setPrompterProperty' -Params @{
         propertyID = 17
-        value = $newValue
+        value = $Value
     }).Result
 
     if (($result.PSObject.Properties.Name -contains 'value') -and -not [bool]$result.value) {
-        throw 'Camera Hub rejected the Prompter display toggle.'
+        throw 'Camera Hub rejected the Prompter display command.'
     }
+}
 
-    $shouldRestart = ($RestartWhen -eq 'Always') -or (($RestartWhen -eq 'Off') -and ($newValue -eq 0))
+function Confirm-PrompterValue {
+    param([int]$Value)
 
-    if ($shouldRestart) {
-        Start-Sleep -Milliseconds $AfterToggleDelayMilliseconds
-        Restart-CameraHub
+    for ($check = 0; $check -lt 5; $check++) {
+        if ((Get-PrompterValue) -eq $Value) { return }
+        Start-Sleep -Milliseconds 500
     }
+    throw "Camera Hub did not retain the requested Prompter state ($Value)."
+}
 
-    [pscustomobject]@{
-        CurrentValue = $currentValue
-        NewValue = $newValue
-        RestartCameraHub = $shouldRestart
+function Toggle-PrompterDisplay {
+    # Resolve a toggle only once, before any writes or recovery.
+    $target = switch ($Action) { 'Off' { 0 } 'On' { 1 } 'Toggle' { $null } }
+    $restarted = $false
+    $initialValue = $null
+    for ($attempt = 0; $attempt -lt 2; $attempt++) {
+        try {
+            $currentValue = Get-PrompterValue
+            if ($null -eq $initialValue) { $initialValue = $currentValue }
+            if ($null -eq $target) { $target = 1 - $currentValue }
+            Write-Log "Prompter action=$Action current=$currentValue target=$target dryRun=$DryRun"
+
+            if ($DryRun) {
+                return [pscustomobject]@{
+                    CurrentValue = $initialValue
+                    NewValue = $target
+                    RestartCameraHub = $false
+                    Verified = $false
+                }
+            }
+
+            # Send explicit Off/On even if the cached property already matches.
+            Set-PrompterValue -Value $target
+            Start-Sleep -Milliseconds $AfterToggleDelayMilliseconds
+            $shouldRestart = ($RestartWhen -eq 'Always') -or (($RestartWhen -eq 'Off') -and ($target -eq 0))
+            if ($shouldRestart -and -not $restarted) {
+                Restart-CameraHub
+                $restarted = $true
+                $afterRestart = Wait-PrompterReady
+                if ($afterRestart -ne $target) {
+                    Set-PrompterValue -Value $target
+                    Start-Sleep -Milliseconds $AfterToggleDelayMilliseconds
+                }
+            }
+            Confirm-PrompterValue -Value $target
+
+            return [pscustomobject]@{
+                CurrentValue = $initialValue
+                NewValue = $target
+                RestartCameraHub = $restarted
+                Verified = $true
+            }
+        } catch {
+            Write-Log "Attempt $($attempt + 1) failed: $($_.Exception.Message)"
+            if ($DryRun -or $attempt -eq 1) { throw }
+            if ($RestartWhen -ne 'Never' -and -not $restarted) {
+                Restart-CameraHub
+                $restarted = $true
+            }
+            $null = Wait-PrompterReady
+        }
     }
 }
 
@@ -206,12 +293,5 @@ try {
 } catch {
     Write-Log "ERROR: $($_.Exception.Message)"
 
-    if ($DryRun) {
-        throw
-    }
-
-    Write-Log 'Restarting Camera Hub and retrying the Prompter toggle once.'
-    Restart-CameraHub
-    Start-Sleep -Seconds 3
-    Toggle-PrompterDisplay | Write-Result
+    throw
 }

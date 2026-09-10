@@ -24,6 +24,10 @@ $processName = "Camera Hub"  # Replace with the actual process name
 $appPath = "C:\Program Files\Elgato\CameraHub\Camera Hub.exe" # Replace with the actual application path
 # --- End Configuration ---
 
+if (-not (Test-Path -LiteralPath $appPath)) {
+    throw "Application path not found: '$appPath'"
+}
+
 Write-Host "Attempting to restart Elgato Camera Hub..."
 
 # Check if the process is running
@@ -33,13 +37,13 @@ if ($process) {
     Write-Host "Elgato Camera Hub process found (PID: $($process.Id))."
     Write-Host "Attempting to close the process..."
     try {
-        Stop-Process -Id $process.Id -Force
+        Stop-Process -Id $process.Id -Force -ErrorAction Stop
         Write-Host "Elgato Camera Hub process closed successfully."
         Start-Sleep -Seconds 5 # Wait a few seconds for the process to fully close
     } catch {
         Write-Warning "Error occurred while trying to close the process: $($_.Exception.Message)"
         Write-Warning "Please try running this script with Administrator privileges."
-        exit 1
+        throw
     }
 } else {
     Write-Host "Elgato Camera Hub process not found."
@@ -53,16 +57,16 @@ Start-Sleep -Seconds 5
 Write-Host "Attempting to start Elgato Camera Hub..."
 if (Test-Path $appPath) {
     try {
-        Start-Process -FilePath $appPath
+        Start-Process -FilePath $appPath -WindowStyle Hidden -ErrorAction Stop
         Write-Host "Elgato Camera Hub started successfully."
     } catch {
         Write-Warning "Error occurred while trying to start the application: $($_.Exception.Message)"
-        exit 1
+        throw
     }
 } else {
     Write-Warning "Application path not found: '$appPath'"
     Write-Warning "Please ensure the \$appPath variable is set correctly."
-    exit 1
+    throw "Application path not found: '$appPath'"
 }
 
 Write-Host "Restart process completed."
