@@ -19,6 +19,7 @@ param(
     [switch]$SkipWsl,
     [switch]$SkipPip,
     [switch]$Elevated,
+    [switch]$UserWingetOnly,
     [switch]$NoPause,
     [int]$KeepOpenMinutes = 0
 )
@@ -42,15 +43,26 @@ $LogDir = Join-Path (Split-Path $ScriptDir -Parent) "logs"
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
 
 $ScriptName = [System.IO.Path]::GetFileNameWithoutExtension($PSCommandPath)
+$LogScriptName = if ($UserWingetOnly) {
+    "${ScriptName}_UserWinget"
+}
+elseif ($Elevated) {
+    "${ScriptName}_Elevated"
+}
+else {
+    $ScriptName
+}
+$StatusScriptName = if ($UserWingetOnly) { "${ScriptName}_UserWinget" } else { $ScriptName }
 $MachineName = $env:COMPUTERNAME
 $Timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm"
-$LogFile = Join-Path $LogDir "${ScriptName}_${MachineName}_$Timestamp.log"
-$LastRunStatusFile = Join-Path $LogDir "${ScriptName}_${MachineName}_last-run.json"
+$LogFile = Join-Path $LogDir "${LogScriptName}_${MachineName}_$Timestamp.log"
+$LastRunStatusFile = Join-Path $LogDir "${StatusScriptName}_${MachineName}_last-run.json"
 
 # Track results for summary
 $Results = @{
     Execution       = @{ Status = "Skipped"; Message = "" }
     Winget          = @{ Status = "Skipped"; Message = "" }
+    SABnzbd         = @{ Status = "Skipped"; Message = "" }
     WindowsStore    = @{ Status = "Skipped"; Message = "" }
     ChocolateyAdmin = @{ Status = "Skipped"; Message = "" }
     Npm             = @{ Status = "Skipped"; Message = "" }
@@ -59,6 +71,15 @@ $Results = @{
 }
 $FinalExitCode = 0
 $UpdateMutexName = "Global\Stuff.UpdateAllPackages.Win"
+$WingetLockPath = Join-Path $LogDir "Update-AllPackages_Win_Winget.lock"
+$SabnzbdRestartMarkerPrefix = "Update-AllPackages_Win_RestartSABnzbd_"
+$SabnzbdStagingRoot = Join-Path `
+    ([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)) `
+    "Stuff.UpdateAllPackages.Staging"
+$SabnzbdLatestReleaseApi = "https://api.github.com/repos/sabnzbd/sabnzbd/releases/latest"
+$UserWingetTaskName = "Weekly Package Updates - User Winget"
+$UserWingetTaskPath = "\"
+$script:UserWingetTaskMayBeRunning = $false
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -271,7 +292,9 @@ function Restore-WingetPackageServiceState {
     [CmdletBinding()]
     param(
         $ServiceState,
-        [timespan]$Timeout = ([timespan]::FromSeconds(30))
+        [timespan]$Timeout = ([timespan]::FromSeconds(30)),
+        [int]$RetryCount = 3,
+        [timespan]$RetryDelay = ([timespan]::FromSeconds(5))
     )
 
     if (-not $ServiceState -or -not $ServiceState.WasRunning) { return "Skipped" }
@@ -279,16 +302,178 @@ function Restore-WingetPackageServiceState {
     $Service = Get-Service -Name $ServiceState.Name -ErrorAction Stop
     if ("$($Service.Status)" -eq "Running") { return "Running" }
 
-    Start-Service -Name $ServiceState.Name -ErrorAction Stop
-    $Service = Get-Service -Name $ServiceState.Name -ErrorAction Stop
-    $Service.WaitForStatus("Running", $Timeout)
-    $Service.Refresh()
+    # A freshly-upgraded binary is sometimes still locked for a moment (e.g. by
+    # antivirus scanning or the outgoing process exiting), so Start-Service can
+    # fail transiently right after winget reports success. Retry briefly before
+    # giving up.
+    $LastError = $null
+    for ($Attempt = 1; $Attempt -le $RetryCount; $Attempt++) {
+        try {
+            Start-Service -Name $ServiceState.Name -ErrorAction Stop
+            $Service = Get-Service -Name $ServiceState.Name -ErrorAction Stop
+            $Service.WaitForStatus("Running", $Timeout)
+            $Service.Refresh()
 
-    if ("$($Service.Status)" -ne "Running") {
-        throw "Service '$($ServiceState.Name)' did not reach the Running state within $([int]$Timeout.TotalSeconds) seconds."
+            if ("$($Service.Status)" -ne "Running") {
+                throw "Service '$($ServiceState.Name)' did not reach the Running state within $([int]$Timeout.TotalSeconds) seconds."
+            }
+
+            return "Restored"
+        }
+        catch {
+            $LastError = $_
+            if ($Attempt -lt $RetryCount) {
+                Write-Log "Attempt $Attempt of $RetryCount to start service '$($ServiceState.Name)' failed: $($_.Exception.Message). Retrying in $([int]$RetryDelay.TotalSeconds)s." -Level Warning
+                Start-Sleep -Seconds $RetryDelay.TotalSeconds
+            }
+        }
     }
 
-    return "Restored"
+    throw $LastError
+}
+
+function Test-UserWingetScheduledTaskDefinition {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Task,
+        [Parameter(Mandatory = $true)]
+        [string]$TaskName,
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedScriptPath
+    )
+
+    if ("$($Task.State)" -eq "Disabled") {
+        throw "Scheduled task '$TaskName' is disabled. Run Setup-PackageUpdateTasks.ps1 to repair it."
+    }
+    if ("$($Task.Principal.RunLevel)" -ne "Limited") {
+        throw "Scheduled task '$TaskName' is not configured to run with limited privileges. Run Setup-PackageUpdateTasks.ps1 to repair it."
+    }
+    if ("$($Task.Principal.LogonType)" -ne "Interactive") {
+        throw "Scheduled task '$TaskName' is not configured for the interactive user. Run Setup-PackageUpdateTasks.ps1 to repair it."
+    }
+
+    $CurrentUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $TaskAccount = New-Object System.Security.Principal.NTAccount("$($Task.Principal.UserId)")
+    $TaskUserSid = $TaskAccount.Translate([Security.Principal.SecurityIdentifier]).Value
+    if ($TaskUserSid -ne $CurrentUserSid) {
+        throw "Scheduled task '$TaskName' belongs to a different user. Run Setup-PackageUpdateTasks.ps1 to repair it."
+    }
+
+    $Actions = @($Task.Actions)
+    $ExpectedScriptFullPath = [System.IO.Path]::GetFullPath($ExpectedScriptPath)
+    $ActionIsValid = $Actions.Count -eq 1 -and
+        "$($Actions[0].Execute)" -match '(?i)(^|\\)powershell(?:\.exe)?$' -and
+        "$($Actions[0].Arguments)" -like '*-UserWingetOnly*' -and
+        "$($Actions[0].Arguments)".IndexOf($ExpectedScriptFullPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+    if (-not $ActionIsValid) {
+        throw "Scheduled task '$TaskName' does not contain the expected user-context updater action. Run Setup-PackageUpdateTasks.ps1 to repair it."
+    }
+
+    return $true
+}
+
+function Invoke-UserWingetScheduledUpdate {
+    [CmdletBinding()]
+    param(
+        [string]$TaskName = $script:UserWingetTaskName,
+        [string]$TaskPath = $script:UserWingetTaskPath,
+        [string]$ExpectedScriptPath = $PSCommandPath,
+        [timespan]$Timeout = ([timespan]::FromMinutes(10)),
+        [ValidateRange(1, 60000)]
+        [int]$PollIntervalMilliseconds = 500
+    )
+
+    $Tasks = @(Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction Stop)
+    if ($Tasks.Count -ne 1) {
+        throw "Expected exactly one scheduled task at '$TaskPath$TaskName', but found $($Tasks.Count)."
+    }
+    $Task = $Tasks[0]
+    $script:UserWingetTaskMayBeRunning = @("Queued", "Running") -contains "$($Task.State)"
+
+    try {
+        $null = Test-UserWingetScheduledTaskDefinition `
+            -Task $Task `
+            -TaskName $TaskName `
+            -ExpectedScriptPath $ExpectedScriptPath
+
+        $PreviousInfo = Get-ScheduledTaskInfo -TaskName $TaskName -TaskPath $TaskPath -ErrorAction Stop
+        $CurrentTasks = @(Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction Stop)
+        if ($CurrentTasks.Count -ne 1) {
+            throw "Expected exactly one scheduled task at '$TaskPath$TaskName', but found $($CurrentTasks.Count)."
+        }
+        $Task = $CurrentTasks[0]
+        $WasAlreadyRunning = ("$($Task.State)" -eq "Running")
+        $WasAlreadyActive = @("Queued", "Running") -contains "$($Task.State)"
+        $script:UserWingetTaskMayBeRunning = $true
+        if (-not $WasAlreadyActive) {
+            Start-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction Stop
+        }
+
+        $Deadline = [datetime]::UtcNow.Add($Timeout)
+        while ($true) {
+            if ([datetime]::UtcNow -ge $Deadline) {
+                $TimeoutMessage = "Timed out after $([int]$Timeout.TotalSeconds) seconds waiting for scheduled task '$TaskName'."
+                try {
+                    Stop-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction Stop
+                }
+                catch {
+                    $TimeoutMessage += " Stop failed: $($_.Exception.Message)"
+                }
+
+                $StopDeadline = [datetime]::UtcNow.AddSeconds(30)
+                do {
+                    $Task = @(Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction Stop)[0]
+                    $TaskIsActive = @("Queued", "Running") -contains "$($Task.State)"
+                    if (-not $TaskIsActive) { break }
+                    Start-Sleep -Milliseconds $PollIntervalMilliseconds
+                } while ([datetime]::UtcNow -lt $StopDeadline)
+
+                if ($TaskIsActive) {
+                    throw "$TimeoutMessage The task could not be confirmed stopped; aborting further WinGet work."
+                }
+
+                $script:UserWingetTaskMayBeRunning = $false
+                throw $TimeoutMessage
+            }
+
+            Start-Sleep -Milliseconds $PollIntervalMilliseconds
+            $CurrentInfo = Get-ScheduledTaskInfo -TaskName $TaskName -TaskPath $TaskPath -ErrorAction Stop
+            $Task = @(Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction Stop)[0]
+            $RunWasObserved = $WasAlreadyRunning -or ($CurrentInfo.LastRunTime -gt $PreviousInfo.LastRunTime)
+            $TaskIsActive = @("Queued", "Running") -contains "$($Task.State)"
+            if (-not $RunWasObserved -or $TaskIsActive -or [int64]$CurrentInfo.LastTaskResult -eq 267009) {
+                continue
+            }
+
+            # Confirm the terminal state once more so a delayed task start cannot be
+            # mistaken for completion while Task Scheduler still reports Ready.
+            Start-Sleep -Milliseconds $PollIntervalMilliseconds
+            $ConfirmedInfo = Get-ScheduledTaskInfo -TaskName $TaskName -TaskPath $TaskPath -ErrorAction Stop
+            $ConfirmedTask = @(Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction Stop)[0]
+            $ConfirmedTaskIsActive = @("Queued", "Running") -contains "$($ConfirmedTask.State)"
+            $ConfirmedRunMatches = $WasAlreadyRunning -or ($ConfirmedInfo.LastRunTime -ge $CurrentInfo.LastRunTime)
+            if ($ConfirmedRunMatches -and -not $ConfirmedTaskIsActive -and [int64]$ConfirmedInfo.LastTaskResult -ne 267009) {
+                $script:UserWingetTaskMayBeRunning = $false
+                return [int64]$ConfirmedInfo.LastTaskResult
+            }
+        }
+    }
+    catch {
+        $OriginalError = $_
+        try {
+            $CurrentTasks = @(Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction Stop)
+            $script:UserWingetTaskMayBeRunning = if ($CurrentTasks.Count -eq 1) {
+                @("Queued", "Running") -contains "$($CurrentTasks[0].State)"
+            }
+            else {
+                $CurrentTasks.Count -gt 1
+            }
+        }
+        catch {
+            $script:UserWingetTaskMayBeRunning = $true
+        }
+        throw $OriginalError
+    }
 }
 
 function Invoke-WingetExplicitUpgrades {
@@ -359,6 +544,298 @@ function Invoke-WingetExplicitUpgrades {
     }
 }
 
+function Initialize-SabnzbdStagingRoot {
+    if (-not $IsAdmin) {
+        throw "SABnzbd's protected staging directory requires administrator privileges."
+    }
+
+    $ProgramFilesPath = [System.IO.Path]::GetFullPath(
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+    ).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+    $FullStagingRoot = [System.IO.Path]::GetFullPath($SabnzbdStagingRoot)
+    if (-not $FullStagingRoot.StartsWith(
+            $ProgramFilesPath + [System.IO.Path]::DirectorySeparatorChar,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw "Refusing to use an unprotected SABnzbd staging path: $FullStagingRoot"
+    }
+
+    $ProgramFilesItem = Get-Item -LiteralPath $ProgramFilesPath -Force -ErrorAction Stop
+    if (($ProgramFilesItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Refusing to stage beneath a reparse-point Program Files directory."
+    }
+
+    if ([System.IO.Directory]::Exists($FullStagingRoot)) {
+        $StagingRootItem = Get-Item -LiteralPath $FullStagingRoot -Force -ErrorAction Stop
+        if (($StagingRootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "The SABnzbd staging root must not be a reparse point."
+        }
+    }
+    else {
+        [System.IO.Directory]::CreateDirectory($FullStagingRoot) | Out-Null
+    }
+
+    # Protect this persistent root from the normal-user side of the updater.
+    # It lives directly beneath Program Files so an unelevated process cannot
+    # pre-create or swap it before these explicit rules are applied.
+    $AdministratorsSid = [System.Security.Principal.SecurityIdentifier]::new("S-1-5-32-544")
+    $SystemSid = [System.Security.Principal.SecurityIdentifier]::new("S-1-5-18")
+    $InheritanceFlags = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+        [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+    $Security = [System.Security.AccessControl.DirectorySecurity]::new()
+    $Security.SetAccessRuleProtection($true, $false)
+    foreach ($Sid in @($AdministratorsSid, $SystemSid)) {
+        $Security.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+                $Sid,
+                [System.Security.AccessControl.FileSystemRights]::FullControl,
+                $InheritanceFlags,
+                [System.Security.AccessControl.PropagationFlags]::None,
+                [System.Security.AccessControl.AccessControlType]::Allow
+            ))
+    }
+    $Security.SetOwner($AdministratorsSid)
+    Set-Acl -LiteralPath $FullStagingRoot -AclObject $Security -ErrorAction Stop
+
+    $ProtectedAcl = Get-Acl -LiteralPath $FullStagingRoot -ErrorAction Stop
+    $StagingRootItem = Get-Item -LiteralPath $FullStagingRoot -Force -ErrorAction Stop
+    if (-not $ProtectedAcl.AreAccessRulesProtected -or
+        ($StagingRootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Could not verify the protected SABnzbd staging root."
+    }
+
+    return $FullStagingRoot
+}
+
+function Get-SabnzbdInstallation {
+    $UninstallKeyPaths = @(
+        "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\SABnzbd",
+        "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\SABnzbd"
+    )
+    $Entries = @(
+        foreach ($KeyPath in $UninstallKeyPaths) {
+            if (-not (Test-Path -LiteralPath $KeyPath)) { continue }
+            $Entry = Get-ItemProperty -LiteralPath $KeyPath -ErrorAction Stop
+            if ("$($Entry.Publisher)" -cne "The SABnzbd-Team" -or "$($Entry.DisplayName)" -notlike "SABnzbd *") {
+                throw "The SABnzbd uninstall entry had unexpected publisher or product metadata: $KeyPath"
+            }
+            $Entry
+        }
+    )
+
+    if ($Entries.Count -eq 0) { return $null }
+    if ($Entries.Count -ne 1) {
+        throw "Expected one machine-wide SABnzbd installation, but found $($Entries.Count)."
+    }
+
+    $VersionText = "$($Entries[0].DisplayVersion)"
+    if ($VersionText -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?$') {
+        throw "Unsupported installed SABnzbd version: $VersionText"
+    }
+
+    $InstallDirectories = New-Object System.Collections.Generic.List[string]
+    foreach ($KeyPath in @(
+            "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\SABnzbd",
+            "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\SABnzbd"
+        )) {
+        if (Test-Path -LiteralPath $KeyPath) {
+            $InstallDirectory = "$( (Get-Item -LiteralPath $KeyPath -ErrorAction Stop).GetValue('') )".Trim()
+            if ($InstallDirectory) { $InstallDirectories.Add($InstallDirectory) }
+        }
+    }
+
+    $UninstallString = "$($Entries[0].UninstallString)"
+    if ($UninstallString -match '^"([^"]+)"') {
+        $InstallDirectories.Add((Split-Path -Parent $Matches[1]))
+    }
+    elseif ($UninstallString) {
+        $InstallDirectories.Add((Split-Path -Parent ($UninstallString -split '\s+')[0]))
+    }
+    if ($env:ProgramFiles) {
+        $InstallDirectories.Add((Join-Path $env:ProgramFiles "SABnzbd"))
+    }
+
+    $ExecutablePaths = @(
+        $InstallDirectories |
+            Where-Object { $_ } |
+            ForEach-Object { Join-Path $_ "SABnzbd.exe" } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            ForEach-Object { [System.IO.Path]::GetFullPath($_) } |
+            Sort-Object -Unique
+    )
+    if ($ExecutablePaths.Count -ne 1) {
+        throw "Expected one installed SABnzbd executable, but found $($ExecutablePaths.Count)."
+    }
+
+    return [pscustomobject]@{
+        Version        = [version]$VersionText
+        VersionText    = $VersionText
+        ExecutablePath = $ExecutablePaths[0]
+    }
+}
+
+function Confirm-SabnzbdFileAtPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedVersion
+    )
+
+    $Item = Get-Item -LiteralPath $Path -ErrorAction Stop
+    $Signature = Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop
+    $null = Confirm-SabnzbdSignedFileMetadata `
+        -SignatureStatus "$($Signature.Status)" `
+        -SignerSubject "$($Signature.SignerCertificate.Subject)" `
+        -CompanyName "$($Item.VersionInfo.CompanyName)" `
+        -ProductName "$($Item.VersionInfo.ProductName)" `
+        -ProductVersion "$($Item.VersionInfo.ProductVersion)" `
+        -ExpectedVersion $ExpectedVersion
+    return $Item
+}
+
+function Get-SabnzbdProcessesAtPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ExecutablePath
+    )
+
+    $ExpectedPath = [System.IO.Path]::GetFullPath($ExecutablePath)
+    return @(
+        foreach ($Process in @(Get-Process -Name "SABnzbd" -ErrorAction SilentlyContinue)) {
+            try {
+                if ($Process.Path -and
+                    [System.IO.Path]::GetFullPath($Process.Path).Equals(
+                        $ExpectedPath,
+                        [System.StringComparison]::OrdinalIgnoreCase
+                    )) {
+                    $Process
+                }
+            }
+            catch {
+                # Ignore inaccessible or already-exited processes.
+            }
+        }
+    )
+}
+
+function Restore-SabnzbdUserProcessIfRequested {
+    $MarkerNamePattern = "^{0}[0-9a-f]{{32}}\.marker$" -f [regex]::Escape($SabnzbdRestartMarkerPrefix)
+    $RestartMarkers = @(Get-ChildItem `
+            -LiteralPath $LogDir `
+            -Filter "${SabnzbdRestartMarkerPrefix}*.marker" `
+            -File `
+            -Force `
+            -ErrorAction SilentlyContinue | Where-Object {
+                $_.Name -cmatch $MarkerNamePattern -and
+                ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0
+            })
+    if ($RestartMarkers.Count -eq 0) { return }
+
+    try {
+        if ($IsAdmin) {
+            throw "SABnzbd desktop restart must run without administrator privileges."
+        }
+
+        $Installation = Get-SabnzbdInstallation
+        if (-not $Installation) {
+            throw "SABnzbd is not installed."
+        }
+        $null = Confirm-SabnzbdFileAtPath `
+            -Path $Installation.ExecutablePath `
+            -ExpectedVersion $Installation.VersionText
+
+        $MatchingProcesses = @(Get-SabnzbdProcessesAtPath -ExecutablePath $Installation.ExecutablePath)
+        if ($MatchingProcesses.Count -eq 0) {
+            Write-Log "Restoring the SABnzbd desktop process as the limited interactive user." -Level Info
+            $StartedProcess = Start-Process `
+                -FilePath $Installation.ExecutablePath `
+                -WorkingDirectory (Split-Path -Parent $Installation.ExecutablePath) `
+                -PassThru `
+                -ErrorAction Stop
+
+            $StartDeadline = [datetime]::UtcNow.AddSeconds(30)
+            do {
+                Start-Sleep -Milliseconds 500
+                $MatchingProcesses = @(Get-SabnzbdProcessesAtPath -ExecutablePath $Installation.ExecutablePath |
+                        Where-Object { $_.Id -eq $StartedProcess.Id })
+            } while ($MatchingProcesses.Count -eq 0 -and [datetime]::UtcNow -lt $StartDeadline)
+            if ($MatchingProcesses.Count -eq 0) {
+                throw "SABnzbd did not restart within 30 seconds."
+            }
+        }
+
+        foreach ($Marker in $RestartMarkers) {
+            [System.IO.File]::Delete($Marker.FullName)
+        }
+        $script:Results.SABnzbd.Status = "Success"
+        $script:Results.SABnzbd.Message = "SABnzbd desktop process is running as the limited interactive user"
+        Write-Log $script:Results.SABnzbd.Message -Level Success
+    }
+    catch {
+        $script:Results.SABnzbd.Status = "Error"
+        $script:Results.SABnzbd.Message = "Could not restore SABnzbd desktop process: $($_.Exception.Message)"
+        Write-Log $script:Results.SABnzbd.Message -Level Error
+    }
+}
+
+function Restore-SabnzbdUserProcessWithPackageLock {
+    $RecoveryLock = $null
+    try {
+        $RecoveryLock = Enter-PackageUpdateFileLock -Path $WingetLockPath
+        Restore-SabnzbdUserProcessIfRequested
+    }
+    catch {
+        $script:Results.SABnzbd.Status = "Error"
+        $script:Results.SABnzbd.Message = "Could not enter the package lock for SABnzbd recovery: $($_.Exception.Message)"
+        Write-Log $script:Results.SABnzbd.Message -Level Error
+    }
+    finally {
+        if ($RecoveryLock) {
+            $RecoveryLock.Dispose()
+        }
+    }
+}
+
+function Update-UserContextWinget {
+    Write-Log ("=" * 60) -Level Info
+    Write-Log "STARTING USER-CONTEXT WINGET UPDATES" -Level Info
+    Write-Log ("=" * 60) -Level Info
+
+    $WingetLock = $null
+    try {
+        if ($IsAdmin) {
+            throw "User-context Winget updates must not run with administrator privileges."
+        }
+
+        Restore-SabnzbdUserProcessWithPackageLock
+        $WingetPath = Get-WingetCommand
+        Write-Log "Found winget at: $($WingetPath.Source)" -Level Info
+        $PackageIds = @(Get-UserContextWingetPackageIds)
+        $WingetLock = Enter-PackageUpdateFileLock -Path $WingetLockPath
+        Write-Log "Acquired exclusive WinGet lock: $WingetLockPath" -Level Info
+        $ExplicitResult = Invoke-WingetExplicitUpgrades -WingetPath $WingetPath -Source "winget" -PackageIds $PackageIds
+
+        if ($ExplicitResult.Failed.Count -gt 0) {
+            $script:Results.Winget.Status = "Warning"
+            $script:Results.Winget.Message = "User-context Winget updates failed: $($ExplicitResult.Failed -join ', ')"
+        }
+        else {
+            $script:Results.Winget.Status = "Success"
+            $script:Results.Winget.Message = "User-context Winget packages checked successfully: $($PackageIds -join ', ')"
+        }
+    }
+    catch {
+        $script:Results.Winget.Status = "Error"
+        $script:Results.Winget.Message = $_.Exception.Message
+        Write-Log "User-context Winget update failed: $($_.Exception.Message)" -Level Error
+    }
+    finally {
+        if ($WingetLock) {
+            $WingetLock.Dispose()
+        }
+    }
+}
+
 function Update-Winget {
     Write-Log ("=" * 60) -Level Info
     Write-Log "STARTING WINGET UPDATES" -Level Info
@@ -372,25 +849,68 @@ function Update-Winget {
         # iCUE currently requires a firmware update before its package upgrade can complete.
         $WingetExcludeIds = @("Corsair.iCUE.5")
 
-        # Pin packages with broken version detection so they don't re-upgrade every run
-        $WingetPins = @("Syncthing.Syncthing", "BillStewart.SyncthingWindowsSetup")
-        foreach ($Pin in $WingetPins) {
-            $PinExists = & $WingetPath.Source pin list | Select-String -Quiet -SimpleMatch $Pin
-            if (-not $PinExists) {
-                Write-Log "Pinning $Pin (broken version detection)" -Level Info
-                & $WingetPath.Source pin add --id $Pin -e --blocking 2>&1 | Out-Null
+        $DiscoveryLock = Enter-PackageUpdateFileLock -Path $WingetLockPath
+        Write-Log "Acquired exclusive WinGet lock for discovery: $WingetLockPath" -Level Info
+        try {
+            # Pin packages with broken version detection so they don't re-upgrade every run
+            $WingetPins = @("Syncthing.Syncthing", "BillStewart.SyncthingWindowsSetup")
+            foreach ($Pin in $WingetPins) {
+                $PinExists = & $WingetPath.Source pin list | Select-String -Quiet -SimpleMatch $Pin
+                if (-not $PinExists) {
+                    Write-Log "Pinning $Pin (broken version detection)" -Level Info
+                    & $WingetPath.Source pin add --id $Pin -e --blocking 2>&1 | Out-Null
+                }
+            }
+
+            # Explicit targeting lets us skip packages that need manual intervention.
+            # PowerShell also commonly needs explicit handling due to MSI detection issues.
+            $ExplicitIds = Get-WingetUpgradeIds -WingetPath $WingetPath -Source "winget" -ExcludePackageIds $WingetExcludeIds
+            $ExecutionPlan = Split-WingetUpgradeIdsByContext -PackageIds $ExplicitIds
+        }
+        finally {
+            $DiscoveryLock.Dispose()
+        }
+
+        $UserContextFailed = New-Object System.Collections.Generic.List[string]
+        $UserContextSucceeded = 0
+        if ($ExecutionPlan.UserContext.Count -gt 0) {
+            Write-Log "Routing user-only Winget packages to the limited scheduled task: $($ExecutionPlan.UserContext -join ', ')" -Level Info
+            try {
+                $UserTaskExitCode = Invoke-UserWingetScheduledUpdate
+                if ($UserTaskExitCode -eq 0) {
+                    $UserContextSucceeded = $ExecutionPlan.UserContext.Count
+                    Write-Log "User-context Winget task completed successfully." -Level Success
+                }
+                else {
+                    foreach ($PackageId in $ExecutionPlan.UserContext) { $UserContextFailed.Add($PackageId) }
+                    Write-Log "User-context Winget task completed with exit code: $UserTaskExitCode" -Level Warning
+                }
+            }
+            catch {
+                if ($script:UserWingetTaskMayBeRunning) {
+                    throw "The user-context Winget task may still be active; stopping the elevated Winget phase to avoid concurrent package operations. $($_.Exception.Message)"
+                }
+                foreach ($PackageId in $ExecutionPlan.UserContext) { $UserContextFailed.Add($PackageId) }
+                Write-Log "Could not complete user-context Winget updates: $($_.Exception.Message)" -Level Warning
             }
         }
 
-        # Explicit targeting lets us skip packages that need manual intervention.
-        # PowerShell also commonly needs explicit handling due to MSI detection issues.
-        $ExplicitIds = Get-WingetUpgradeIds -WingetPath $WingetPath -Source "winget" -ExcludePackageIds $WingetExcludeIds
-        $ExplicitResult = Invoke-WingetExplicitUpgrades -WingetPath $WingetPath -Source "winget" -PackageIds $ExplicitIds
+        $UpgradeLock = Enter-PackageUpdateFileLock -Path $WingetLockPath
+        Write-Log "Acquired exclusive WinGet lock for elevated upgrades: $WingetLockPath" -Level Info
+        try {
+            $ExplicitResult = Invoke-WingetExplicitUpgrades -WingetPath $WingetPath -Source "winget" -PackageIds $ExecutionPlan.Elevated
+        }
+        finally {
+            $UpgradeLock.Dispose()
+        }
+        $Succeeded = $ExplicitResult.Succeeded + $UserContextSucceeded
+        $FailedCandidates = @($ExplicitResult.Failed) + @($UserContextFailed)
+        [string[]]$Failed = @($FailedCandidates | Where-Object { $_ })
 
-        if ($ExplicitResult.Failed.Count -eq 0) {
+        if ($Failed.Count -eq 0) {
             $script:Results.Winget.Status = "Success"
-            if ($ExplicitResult.Succeeded -gt 0) {
-                $script:Results.Winget.Message = "Winget packages updated successfully ($($ExplicitResult.Succeeded) explicit checks; skipped: $($WingetExcludeIds -join ', '))"
+            if ($Succeeded -gt 0) {
+                $script:Results.Winget.Message = "Winget packages updated successfully ($Succeeded upgrades; skipped: $($WingetExcludeIds -join ', '))"
             }
             else {
                 $script:Results.Winget.Message = "Winget packages updated successfully (skipped: $($WingetExcludeIds -join ', '))"
@@ -398,8 +918,8 @@ function Update-Winget {
         }
         else {
             $script:Results.Winget.Status = "Warning"
-            if ($ExplicitResult.Failed.Count -gt 0) {
-                $script:Results.Winget.Message = "Winget completed with issues; failed explicit upgrades: $($ExplicitResult.Failed -join ', ')"
+            if ($Failed.Count -gt 0) {
+                $script:Results.Winget.Message = "Winget completed with issues; packages requiring attention: $($Failed -join ', ')"
             }
             else {
                 $script:Results.Winget.Message = "Winget completed with issues"
@@ -414,14 +934,309 @@ function Update-Winget {
     }
 }
 
+function Update-SabnzbdFromOfficialRelease {
+    Write-Log ("=" * 60) -Level Info
+    Write-Log "CHECKING OFFICIAL SABNZBD RELEASE" -Level Info
+    Write-Log ("=" * 60) -Level Info
+
+    $TemporaryDirectory = $null
+    $InstallerPath = $null
+    $InstallerGuard = $null
+    $WingetLock = $null
+    $UpdateFailure = $null
+    $RuntimeRestoreFailure = $null
+    $UpdatePerformed = $false
+    $InstalledAfter = $null
+    $ServiceWasRunning = $false
+    $DesktopWasRunning = $false
+    $RestartMarkerCreated = $false
+    $RestartMarkerPath = $null
+
+    try {
+        if (-not $IsAdmin) {
+            throw "The official SABnzbd machine installer requires administrator privileges."
+        }
+
+        $Installation = Get-SabnzbdInstallation
+        if (-not $Installation) {
+            $script:Results.SABnzbd.Status = "Skipped"
+            $script:Results.SABnzbd.Message = "SABnzbd is not installed"
+            Write-Log $script:Results.SABnzbd.Message -Level Info
+            return
+        }
+        $null = Confirm-SabnzbdFileAtPath `
+            -Path $Installation.ExecutablePath `
+            -ExpectedVersion $Installation.VersionText
+
+        $Headers = @{
+            "Accept"               = "application/vnd.github+json"
+            "User-Agent"           = "Update-AllPackages-Win"
+            "X-GitHub-Api-Version" = "2022-11-28"
+        }
+        Write-Log "Checking SABnzbd's official stable release metadata." -Level Info
+        $Release = Invoke-RestMethod `
+            -Uri $SabnzbdLatestReleaseApi `
+            -Headers $Headers `
+            -TimeoutSec 30 `
+            -ErrorAction Stop
+        $Plan = Get-SabnzbdOfficialUpdatePlan `
+            -InstalledVersion $Installation.VersionText `
+            -Release $Release
+        Write-Log "SABnzbd versions: installed=$($Installation.VersionText) official=$($Plan.TargetVersionText)" -Level Info
+
+        if (-not $Plan.NeedsUpdate) {
+            $script:Results.SABnzbd.Status = "Success"
+            $script:Results.SABnzbd.Message = "SABnzbd $($Installation.VersionText) is current with the official stable release"
+            Write-Log $script:Results.SABnzbd.Message -Level Success
+            return
+        }
+
+        $ProtectedStagingRoot = Initialize-SabnzbdStagingRoot
+        $TemporaryDirectory = Join-Path `
+            $ProtectedStagingRoot `
+            ("Update-AllPackages_Win_SABnzbd_{0}_{1}" -f $PID, [guid]::NewGuid().ToString("N"))
+        [System.IO.Directory]::CreateDirectory($TemporaryDirectory) | Out-Null
+        $StagingItem = Get-Item -LiteralPath $TemporaryDirectory -Force -ErrorAction Stop
+        if (($StagingItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "The SABnzbd per-run staging directory must not be a reparse point."
+        }
+        $InstallerPath = Join-Path $TemporaryDirectory $Plan.AssetName
+
+        Write-Log "Downloading the signed SABnzbd $($Plan.TargetVersionText) installer from the official GitHub release." -Level Info
+        Invoke-WebRequest `
+            -Uri $Plan.DownloadUrl `
+            -Headers @{ "User-Agent" = "Update-AllPackages-Win" } `
+            -OutFile $InstallerPath `
+            -UseBasicParsing `
+            -TimeoutSec 180 `
+            -ErrorAction Stop
+        $DownloadedSize = (Get-Item -LiteralPath $InstallerPath -ErrorAction Stop).Length
+        if ($DownloadedSize -ne $Plan.Size) {
+            throw "Downloaded SABnzbd installer size was $DownloadedSize bytes, expected $($Plan.Size)."
+        }
+
+        $WingetLock = Enter-PackageUpdateFileLock -Path $WingetLockPath
+        Write-Log "Acquired exclusive package lock for the SABnzbd installer: $WingetLockPath" -Level Info
+
+        # A newly published WinGet upgrade may have completed while the official
+        # installer downloaded. Re-check under the shared package lock.
+        $Installation = Get-SabnzbdInstallation
+        if (-not $Installation) {
+            throw "SABnzbd disappeared before the official update could start."
+        }
+        if ($Installation.Version -ge $Plan.TargetVersion) {
+            $script:Results.SABnzbd.Status = "Success"
+            $script:Results.SABnzbd.Message = "SABnzbd $($Installation.VersionText) became current before the official fallback ran"
+            Write-Log $script:Results.SABnzbd.Message -Level Success
+            return
+        }
+
+        $SabnzbdService = Get-Service -Name "SABnzbd" -ErrorAction SilentlyContinue
+        $ServiceWasRunning = $SabnzbdService -and "$($SabnzbdService.Status)" -eq "Running"
+        $DesktopWasRunning = -not $ServiceWasRunning -and
+            @(Get-SabnzbdProcessesAtPath -ExecutablePath $Installation.ExecutablePath).Count -gt 0
+
+        if ($DesktopWasRunning) {
+            $RestartTasks = @(Get-ScheduledTask `
+                    -TaskName $UserWingetTaskName `
+                    -TaskPath $UserWingetTaskPath `
+                    -ErrorAction Stop)
+            if ($RestartTasks.Count -ne 1) {
+                throw "The limited user helper required to restart SABnzbd is not installed. Run Setup-PackageUpdateTasks.ps1."
+            }
+            $null = Test-UserWingetScheduledTaskDefinition `
+                -Task $RestartTasks[0] `
+                -TaskName $UserWingetTaskName `
+                -ExpectedScriptPath $PSCommandPath
+
+            $RestartMarkerPath = Join-Path $LogDir ("{0}{1}.marker" -f `
+                    $SabnzbdRestartMarkerPrefix, `
+                    [guid]::NewGuid().ToString("N"))
+            $MarkerText = "requestedAtUtc=$([datetime]::UtcNow.ToString('o'));target=$($Plan.TargetVersionText)"
+            $MarkerBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes(
+                $MarkerText + [Environment]::NewLine
+            )
+            $MarkerStream = [System.IO.File]::Open(
+                $RestartMarkerPath,
+                [System.IO.FileMode]::CreateNew,
+                [System.IO.FileAccess]::Write,
+                [System.IO.FileShare]::None
+            )
+            try {
+                $MarkerStream.Write($MarkerBytes, 0, $MarkerBytes.Length)
+                $MarkerStream.Flush($true)
+            }
+            finally {
+                $MarkerStream.Dispose()
+            }
+            $RestartMarkerCreated = $true
+        }
+
+        # Hold a read-only handle that denies writes/deletes from validation
+        # through process completion, closing the verify-to-execute race.
+        $InstallerGuard = [System.IO.File]::Open(
+            $InstallerPath,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read,
+            [System.IO.FileShare]::Read
+        )
+        $ActualSha256 = (Get-FileHash -LiteralPath $InstallerPath -Algorithm SHA256 -ErrorAction Stop).Hash
+        $Signature = Get-AuthenticodeSignature -LiteralPath $InstallerPath -ErrorAction Stop
+        $InstallerItem = Get-Item -LiteralPath $InstallerPath -ErrorAction Stop
+        $null = Confirm-SabnzbdInstallerTrust `
+            -ExpectedSha256 $Plan.Sha256 `
+            -ActualSha256 $ActualSha256 `
+            -SignatureStatus "$($Signature.Status)" `
+            -SignerSubject "$($Signature.SignerCertificate.Subject)" `
+            -CompanyName "$($InstallerItem.VersionInfo.CompanyName)" `
+            -ProductName "$($InstallerItem.VersionInfo.ProductName)" `
+            -ProductVersion "$($InstallerItem.VersionInfo.ProductVersion)" `
+            -ExpectedVersion $Plan.TargetVersionText
+
+        Write-Log "Verified official SHA-256 and SignPath signature. Installing SABnzbd $($Plan.TargetVersionText) silently." -Level Info
+        $InstallerProcess = Start-Process `
+            -FilePath $InstallerPath `
+            -ArgumentList "/S" `
+            -WindowStyle Hidden `
+            -Wait `
+            -PassThru `
+            -ErrorAction Stop
+        if ($InstallerProcess.ExitCode -ne 0) {
+            throw "SABnzbd installer exited with code $($InstallerProcess.ExitCode)."
+        }
+        $InstallerGuard.Dispose()
+        $InstallerGuard = $null
+
+        $VerificationDeadline = [datetime]::UtcNow.AddSeconds(30)
+        do {
+            Start-Sleep -Milliseconds 500
+            $InstalledAfter = Get-SabnzbdInstallation
+        } while ((-not $InstalledAfter -or $InstalledAfter.Version -lt $Plan.TargetVersion) -and
+            [datetime]::UtcNow -lt $VerificationDeadline)
+        if (-not $InstalledAfter -or $InstalledAfter.Version -lt $Plan.TargetVersion) {
+            $FoundVersion = if ($InstalledAfter) { $InstalledAfter.VersionText } else { "not installed" }
+            throw "SABnzbd verification failed: expected at least $($Plan.TargetVersionText), found $FoundVersion."
+        }
+        $null = Confirm-SabnzbdFileAtPath `
+            -Path $InstalledAfter.ExecutablePath `
+            -ExpectedVersion $InstalledAfter.VersionText
+        $UpdatePerformed = $true
+    }
+    catch {
+        $UpdateFailure = $_.Exception.Message
+    }
+    finally {
+        if ($InstallerGuard) {
+            $InstallerGuard.Dispose()
+        }
+        if ($WingetLock) {
+            $WingetLock.Dispose()
+        }
+
+        if ($ServiceWasRunning) {
+            try {
+                $Service = Get-Service -Name "SABnzbd" -ErrorAction Stop
+                if ("$($Service.Status)" -ne "Running") {
+                    Start-Service -Name "SABnzbd" -ErrorAction Stop
+                    $Service.WaitForStatus("Running", [timespan]::FromSeconds(30))
+                    $Service.Refresh()
+                }
+                if ("$($Service.Status)" -ne "Running") {
+                    throw "SABnzbd service did not return to the Running state."
+                }
+            }
+            catch {
+                $RuntimeRestoreFailure = $_.Exception.Message
+            }
+        }
+        elseif ($RestartMarkerCreated) {
+            try {
+                $RestartExitCode = Invoke-UserWingetScheduledUpdate
+                $RestoreInstallation = Get-SabnzbdInstallation
+                if (-not $RestoreInstallation) {
+                    throw "SABnzbd was not installed after the limited helper completed."
+                }
+                $ProcessDeadline = [datetime]::UtcNow.AddSeconds(30)
+                do {
+                    $SabnzbdProcesses = @(Get-SabnzbdProcessesAtPath `
+                            -ExecutablePath $RestoreInstallation.ExecutablePath)
+                    if ($SabnzbdProcesses.Count -gt 0) { break }
+                    Start-Sleep -Milliseconds 500
+                } while ([datetime]::UtcNow -lt $ProcessDeadline)
+                if ($SabnzbdProcesses.Count -eq 0) {
+                    throw "The limited helper did not restore the SABnzbd desktop process (task exit code $RestartExitCode)."
+                }
+                if ($RestartMarkerPath -and (Test-Path -LiteralPath $RestartMarkerPath -PathType Leaf)) {
+                    [System.IO.File]::Delete($RestartMarkerPath)
+                }
+                if ($RestartExitCode -ne 0) {
+                    Write-Log "SABnzbd was restored, but the limited helper reported exit code $RestartExitCode." -Level Warning
+                }
+            }
+            catch {
+                $RuntimeRestoreFailure = $_.Exception.Message
+            }
+        }
+
+        if ($TemporaryDirectory -and [System.IO.Directory]::Exists($TemporaryDirectory)) {
+            try {
+                $FullTemporaryDirectory = [System.IO.Path]::GetFullPath($TemporaryDirectory)
+                $FullProtectedStagingRoot = [System.IO.Path]::GetFullPath($SabnzbdStagingRoot).TrimEnd(
+                    [System.IO.Path]::DirectorySeparatorChar
+                )
+                if (-not $FullTemporaryDirectory.StartsWith(
+                        $FullProtectedStagingRoot + [System.IO.Path]::DirectorySeparatorChar,
+                        [System.StringComparison]::OrdinalIgnoreCase
+                    )) {
+                    throw "Refusing to remove unexpected temporary directory: $FullTemporaryDirectory"
+                }
+                $StagingItem = Get-Item -LiteralPath $FullTemporaryDirectory -Force -ErrorAction Stop
+                if (($StagingItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw "Refusing to remove a reparse-point SABnzbd staging directory."
+                }
+                if ($InstallerPath -and [System.IO.File]::Exists($InstallerPath)) {
+                    [System.IO.File]::Delete($InstallerPath)
+                }
+                $RemainingEntries = [System.IO.Directory]::GetFileSystemEntries($FullTemporaryDirectory)
+                if ($RemainingEntries.Count -ne 0) {
+                    throw "Refusing to remove a non-empty SABnzbd staging directory."
+                }
+                [System.IO.Directory]::Delete($FullTemporaryDirectory, $false)
+            }
+            catch {
+                Write-Log "Could not remove SABnzbd temporary directory: $($_.Exception.Message)" -Level Warning
+            }
+        }
+    }
+
+    if ($RuntimeRestoreFailure) {
+        $RuntimeMessage = "Could not restore SABnzbd's prior running state: $RuntimeRestoreFailure"
+        $UpdateFailure = if ($UpdateFailure) { "$UpdateFailure $RuntimeMessage" } else { $RuntimeMessage }
+    }
+
+    if ($UpdateFailure) {
+        $script:Results.SABnzbd.Status = "Error"
+        $script:Results.SABnzbd.Message = $UpdateFailure
+        Write-Log "Official SABnzbd update failed: $UpdateFailure" -Level Error
+    }
+    elseif ($UpdatePerformed) {
+        $script:Results.SABnzbd.Status = "Success"
+        $script:Results.SABnzbd.Message = "SABnzbd updated and verified at $($InstalledAfter.VersionText)"
+        Write-Log $script:Results.SABnzbd.Message -Level Success
+    }
+}
+
 function Update-WindowsStore {
     Write-Log ("=" * 60) -Level Info
     Write-Log "STARTING WINDOWS STORE UPDATES" -Level Info
     Write-Log ("=" * 60) -Level Info
 
+    $WingetLock = $null
     try {
         $WingetPath = Get-WingetCommand
         Write-Log "Found winget at: $($WingetPath.Source)" -Level Info
+        $WingetLock = Enter-PackageUpdateFileLock -Path $WingetLockPath
+        Write-Log "Acquired exclusive WinGet lock for Windows Store updates: $WingetLockPath" -Level Info
 
         Write-Log "Running: winget upgrade --all --source msstore --include-unknown --accept-package-agreements --accept-source-agreements" -Level Info
 
@@ -467,6 +1282,11 @@ function Update-WindowsStore {
         $script:Results.WindowsStore.Message = $_.Exception.Message
         Write-Log "Windows Store update failed: $($_.Exception.Message)" -Level Error
         Show-ToastNotification -Title "Windows Store Update Failed" -Message $_.Exception.Message -Type Error
+    }
+    finally {
+        if ($WingetLock) {
+            $WingetLock.Dispose()
+        }
     }
 }
 
@@ -956,10 +1776,11 @@ function Update-NpmGlobal {
                 $PackageInfo = $Property.Value
                 $TargetVersion = if ($PackageInfo.latest) { "$($PackageInfo.latest)" } else { "latest" }
                 Write-Log "Updating ${PackageName}: $($PackageInfo.current) -> $TargetVersion" -Level Info
-                $InstallResult = Invoke-NpmInstall -NpmCommand $NpmPath.Source -Arguments @(
-                    "install", "-g", "--prefix", $NpmPrefix, "--loglevel=error",
-                    "--strict-allow-scripts", "--allow-scripts=@github/keytar,node-pty", "$PackageName@$TargetVersion"
-                )
+                $InstallArguments = @(Get-NpmGenericInstallArguments `
+                    -NpmPrefix $NpmPrefix `
+                    -PackageName $PackageName `
+                    -TargetVersion $TargetVersion)
+                $InstallResult = Invoke-NpmInstall -NpmCommand $NpmPath.Source -Arguments $InstallArguments
                 if (-not $InstallResult.Success) {
                     $Issues.Add("$PackageName failed with exit code $($InstallResult.ExitCode)")
                     continue
@@ -1048,6 +1869,8 @@ function Update-NpmGlobal {
 }
 
 function Show-Summary {
+    param([switch]$SuppressNotification)
+
     Write-Log "" -Level Info
     Write-Log ("=" * 60) -Level Info
     Write-Log "UPDATE SUMMARY" -Level Info
@@ -1076,19 +1899,19 @@ function Show-Summary {
 
     $ExitCode = Get-PackageUpdateExitCode -Results $Results
 
-    # Final notification
-    if ($ExitCode -eq 1) {
-        Show-ToastNotification -Title "Package Updates Completed with Errors" -Message "Check the log for details: $LogFile" -Type Warning | Out-Null
-        return 1
+    if (-not $SuppressNotification) {
+        if ($ExitCode -eq 1) {
+            Show-ToastNotification -Title "Package Updates Completed with Errors" -Message "Check the log for details: $LogFile" -Type Warning | Out-Null
+        }
+        elseif ($ExitCode -eq 2) {
+            Show-ToastNotification -Title "Package Updates Completed with Warnings" -Message "Some updates need attention. Check the log: $LogFile" -Type Warning | Out-Null
+        }
+        else {
+            Show-ToastNotification -Title "Package Updates Completed" -Message "All package managers updated successfully!" -Type Info | Out-Null
+        }
     }
-    elseif ($ExitCode -eq 2) {
-        Show-ToastNotification -Title "Package Updates Completed with Warnings" -Message "Some updates need attention. Check the log: $LogFile" -Type Warning | Out-Null
-        return 2
-    }
-    else {
-        Show-ToastNotification -Title "Package Updates Completed" -Message "All package managers updated successfully!" -Type Info | Out-Null
-        return 0
-    }
+
+    return $ExitCode
 }
 
 # ============================================================================
@@ -1115,11 +1938,18 @@ Write-Log ("=" * 60) -Level Info
 
 # Check for Data Saver / Metered Connection
 if (Test-DataSaver) {
+    if ($UserWingetOnly) {
+        # A pending desktop restart is local recovery work, not a download. Do
+        # it even when package network traffic is deferred on a metered link.
+        Restore-SabnzbdUserProcessWithPackageLock
+    }
     $Results.Execution.Status = "Warning"
     $Results.Execution.Message = "Metered connection (Data Saver) detected. Skipping auto updates to conserve data."
-    $FinalExitCode = 2
+    $FinalExitCode = Get-PackageUpdateExitCode -Results $Results
     Write-Log $Results.Execution.Message -Level Warning
-    Show-ToastNotification -Title "Package Updates Skipped" -Message "Metered connection detected. Updates deferred to save data." -Type Warning
+    if (-not $UserWingetOnly) {
+        Show-ToastNotification -Title "Package Updates Skipped" -Message "Metered connection detected. Updates deferred to save data." -Type Warning
+    }
 
     try {
         $SourceSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256 -ErrorAction Stop).Hash
@@ -1148,7 +1978,7 @@ if (Test-DataSaver) {
 }
 
 # Clean up old log files (keep only 3 most recent)
-$LogPattern = Join-Path $LogDir "${ScriptName}_${MachineName}_*.log"
+$LogPattern = Join-Path $LogDir "${LogScriptName}_${MachineName}_*.log"
 $OldLogs = Get-ChildItem -Path $LogPattern -ErrorAction SilentlyContinue |
 Sort-Object LastWriteTime -Descending |
 Select-Object -Skip 3
@@ -1161,11 +1991,28 @@ if ($OldLogs) {
 }
 
 # Show start notification
-Show-ToastNotification -Title "Package Updates Starting" -Message "Updating winget, Windows Store, Chocolatey, npm, WSL apt, and pip packages..." -Type Info
+if (-not $UserWingetOnly) {
+    Show-ToastNotification -Title "Package Updates Starting" -Message "Updating winget, Windows Store, Chocolatey, npm, WSL apt, and pip packages..." -Type Info
+}
 
 # Handle split execution (User vs Elevated)
 
-if (-not $IsAdmin -and -not $Elevated) {
+if ($UserWingetOnly) {
+    if ($IsAdmin) {
+        $Results.Execution.Status = "Error"
+        $Results.Execution.Message = "User-context Winget mode was launched with administrator privileges"
+        $Results.Winget.Status = "Error"
+        $Results.Winget.Message = $Results.Execution.Message
+        $FinalExitCode = 1
+        Write-Log $Results.Execution.Message -Level Error
+    }
+    else {
+        Update-UserContextWinget
+        $Results.Execution.Status = "Success"
+        $Results.Execution.Message = "User-context Winget execution completed"
+    }
+}
+elseif (-not $IsAdmin -and -not $Elevated) {
     # All enabled package-manager phases execute in one elevated child so that
     # filtered runs cannot silently skip user-prefix npm, WSL, or pip work.
     $NeedsElevation = (-not $SkipWinget) -or
@@ -1229,8 +2076,20 @@ else {
         }
         else {
             Write-Log "Acquired exclusive package updater mutex: $UpdateMutexName" -Level Info
-            if (-not $SkipWinget) { Update-Winget }
-            if (-not $SkipWindowsStore) { Update-WindowsStore }
+            if (-not $SkipWinget) {
+                Update-Winget
+                Update-SabnzbdFromOfficialRelease
+            }
+            if (-not $SkipWindowsStore) {
+                if ($script:UserWingetTaskMayBeRunning) {
+                    $Results.WindowsStore.Status = "Warning"
+                    $Results.WindowsStore.Message = "Skipped to avoid overlapping a user-context Winget task that may still be active"
+                    Write-Log $Results.WindowsStore.Message -Level Warning
+                }
+                else {
+                    Update-WindowsStore
+                }
+            }
             if (-not $SkipAdminChocolatey) { Update-Chocolatey }
             if (-not $SkipNpm) { Update-NpmGlobal }
             if (-not $SkipWsl) { Update-WslPackages }
@@ -1270,9 +2129,9 @@ if ($script:TranscriptActive) {
     $script:TranscriptActive = $false
 }
 
-if ($Elevated -or $IsAdmin) {
+if ($UserWingetOnly -or $Elevated -or $IsAdmin) {
     # Only show summary and completion wait in the "active" or final process
-    $SummaryExitCode = Show-Summary
+    $SummaryExitCode = Show-Summary -SuppressNotification:$UserWingetOnly
     if ($FinalExitCode -eq 1 -or $SummaryExitCode -eq 1) {
         $FinalExitCode = 1
     }

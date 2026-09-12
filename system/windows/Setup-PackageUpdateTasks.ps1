@@ -2,7 +2,8 @@
 .SYNOPSIS
     Sets up Windows Task Scheduler tasks for weekly package updates.
 .DESCRIPTION
-    Creates a scheduled task to run Update-AllPackages_Win.ps1 every Saturday at 1:00 AM.
+    Creates an elevated weekly task plus an on-demand limited-privilege task for
+    user-only WinGet packages such as Spotify.
     Can also be used to update or remove scheduled tasks and clean up legacy entries.
     The update script covers winget, Windows Store, Chocolatey, npm, WSL apt, and pip.
 .PARAMETER Remove
@@ -12,13 +13,13 @@
 .PARAMETER NoPause
     Do not wait for Enter before the setup script exits.
 .PARAMETER RenderOnly
-    Print the task definition as JSON without elevation or Task Scheduler changes.
+    Print both task definitions as JSON without elevation or Task Scheduler changes.
 .EXAMPLE
     .\Setup-PackageUpdateTasks.ps1
-    Creates the scheduled task.
+    Creates the elevated weekly task and its limited-privilege helper.
 .EXAMPLE
     .\Setup-PackageUpdateTasks.ps1 -Remove
-    Removes the scheduled task.
+    Removes both scheduled tasks.
 #>
 
 param(
@@ -29,11 +30,12 @@ param(
 )
 
 $TaskName = "Weekly Package Updates"
+$UserWingetTaskName = "Weekly Package Updates - User Winget"
 $ScriptDir = $PSScriptRoot
 $UpdateScript = Join-Path $ScriptDir "Update-AllPackages_Win.ps1"
 $ScheduledRunKeepOpenMinutes = 720
 $SetupExitCode = 0
-$TaskUser = if ($env:USERNAME) { $env:USERNAME } elseif ($env:USER) { $env:USER } else { "current-user" }
+$TaskUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 
 function Get-PackageUpdateTaskSpec {
     param(
@@ -78,23 +80,66 @@ function Get-PackageUpdateTaskSpec {
     }
 }
 
+function Get-UserWingetTaskSpec {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TaskName,
+        [Parameter(Mandatory = $true)]
+        [string]$UpdateScript,
+        [Parameter(Mandatory = $true)]
+        [string]$WorkingDirectory,
+        [Parameter(Mandatory = $true)]
+        [string]$UserId
+    )
+
+    return [ordered]@{
+        taskName    = $TaskName
+        action      = [ordered]@{
+            execute          = "powershell.exe"
+            arguments        = "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$UpdateScript`" -UserWingetOnly -NoPause"
+            workingDirectory = $WorkingDirectory
+        }
+        settings    = [ordered]@{
+            allowStartIfOnBatteries    = $true
+            dontStopIfGoingOnBatteries = $true
+            runOnlyIfNetworkAvailable  = $false
+            multipleInstances          = "IgnoreNew"
+        }
+        principal   = [ordered]@{
+            userId    = $UserId
+            logonType = "Interactive"
+            runLevel  = "Limited"
+        }
+        description = "Runs user-only WinGet updates and restores SABnzbd on demand with limited privileges."
+    }
+}
+
 $TaskSpec = Get-PackageUpdateTaskSpec `
     -TaskName $TaskName `
     -UpdateScript $UpdateScript `
     -WorkingDirectory $ScriptDir `
     -UserId $TaskUser `
     -KeepOpenMinutes $ScheduledRunKeepOpenMinutes
+$UserWingetTaskSpec = Get-UserWingetTaskSpec `
+    -TaskName $UserWingetTaskName `
+    -UpdateScript $UpdateScript `
+    -WorkingDirectory $ScriptDir `
+    -UserId $TaskUser
 
 if ($RenderOnly) {
-    $TaskSpec | ConvertTo-Json -Depth 5
+    [ordered]@{
+        weekly    = $TaskSpec
+        userWinget = $UserWingetTaskSpec
+    } | ConvertTo-Json -Depth 6
     exit 0
 }
 
 $IsAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 function Get-PackageUpdateTasks {
+    $CanonicalTaskNames = @($TaskName, $UserWingetTaskName)
     @(Get-ScheduledTask -ErrorAction Stop | Where-Object {
-        $_.TaskName -eq $TaskName -or
+        $_.TaskName -in $CanonicalTaskNames -or
         ($_.Actions | Where-Object {
             $_.Execute -match 'powershell(\.exe)?$' -and
             $_.Arguments -like "*Update-AllPackages_Win.ps1*"
@@ -116,8 +161,9 @@ function Remove-PackageUpdateTasks {
 }
 
 function Remove-LegacyPackageUpdateTasks {
+    $CanonicalTaskNames = @($TaskName, $UserWingetTaskName)
     $LegacyTasks = Get-PackageUpdateTasks |
-        Where-Object { $_.TaskName -ne $TaskName -or $_.TaskPath -ne "\" } |
+        Where-Object { $_.TaskName -notin $CanonicalTaskNames -or $_.TaskPath -ne "\" } |
         Sort-Object TaskPath, TaskName -Unique
 
     foreach ($Task in $LegacyTasks) {
@@ -208,10 +254,10 @@ if ($Remove) {
 }
 
 # ============================================================================
-# CREATE/UPDATE TASK
+# CREATE/UPDATE TASKS
 # ============================================================================
 
-Write-Status "Setting up scheduled task: $TaskName" -Level Info
+Write-Status "Setting up scheduled tasks: $TaskName and $UserWingetTaskName" -Level Info
 Write-Status "Script to run: $UpdateScript" -Level Info
 
 # Verify the update script exists
@@ -252,6 +298,15 @@ try {
     }
     $Settings = New-ScheduledTaskSettingsSet @SettingsParameters
 
+    $UserSettingsParameters = @{
+        AllowStartIfOnBatteries    = $UserWingetTaskSpec.settings.allowStartIfOnBatteries
+        DontStopIfGoingOnBatteries = $UserWingetTaskSpec.settings.dontStopIfGoingOnBatteries
+        RunOnlyIfNetworkAvailable  = $UserWingetTaskSpec.settings.runOnlyIfNetworkAvailable
+        MultipleInstances          = $UserWingetTaskSpec.settings.multipleInstances
+        ErrorAction                = "Stop"
+    }
+    $UserSettings = New-ScheduledTaskSettingsSet @UserSettingsParameters
+
     # Create principal - run elevated as current user so scheduled runs do not stall at UAC.
     $PrincipalParameters = @{
         UserId      = $TaskSpec.principal.userId
@@ -261,7 +316,32 @@ try {
     }
     $Principal = New-ScheduledTaskPrincipal @PrincipalParameters
 
-    # Register the task
+    $UserActionParameters = @{
+        Execute          = $UserWingetTaskSpec.action.execute
+        Argument         = $UserWingetTaskSpec.action.arguments
+        WorkingDirectory = $UserWingetTaskSpec.action.workingDirectory
+        ErrorAction      = "Stop"
+    }
+    $UserAction = New-ScheduledTaskAction @UserActionParameters
+
+    $UserPrincipalParameters = @{
+        UserId      = $UserWingetTaskSpec.principal.userId
+        LogonType   = $UserWingetTaskSpec.principal.logonType
+        RunLevel    = $UserWingetTaskSpec.principal.runLevel
+        ErrorAction = "Stop"
+    }
+    $UserPrincipal = New-ScheduledTaskPrincipal @UserPrincipalParameters
+
+    Register-ScheduledTask `
+        -TaskName $UserWingetTaskSpec.taskName `
+        -Action $UserAction `
+        -Settings $UserSettings `
+        -Principal $UserPrincipal `
+        -Description $UserWingetTaskSpec.description `
+        -Force `
+        -ErrorAction Stop
+
+    # Register the elevated weekly task after its limited helper is available.
     Register-ScheduledTask `
         -TaskName $TaskSpec.taskName `
         -Action $Action `
@@ -272,7 +352,7 @@ try {
         -Force `
         -ErrorAction Stop
 
-    Write-Status "Scheduled task created or updated successfully!" -Level Success
+    Write-Status "Scheduled tasks created or updated successfully!" -Level Success
 
     try {
         Remove-LegacyPackageUpdateTasks
@@ -287,6 +367,7 @@ try {
     Write-Status "  Name: $TaskName" -Level Info
     Write-Status "  Schedule: Every Saturday at 1:00 AM" -Level Info
     Write-Status "  Run level: Highest available privileges" -Level Info
+    Write-Status "  User WinGet helper: $UserWingetTaskName (on demand, limited privileges)" -Level Info
     Write-Status "  Multiple instances: Ignore new starts while a run is active" -Level Info
     Write-Status "  Window: Normal PowerShell window, kept open for $ScheduledRunKeepOpenMinutes minutes after completion" -Level Info
     Write-Status "  Script: $UpdateScript" -Level Info
@@ -294,7 +375,7 @@ try {
     Write-Status "To run the update manually, execute:" -Level Info
     Write-Host "  .\Update-AllPackages_Win.ps1" -ForegroundColor White
     Write-Status "" -Level Info
-    Write-Status "To remove this scheduled task, run:" -Level Info
+    Write-Status "To remove these scheduled tasks, run:" -Level Info
     Write-Host "  .\Setup-PackageUpdateTasks.ps1 -Remove" -ForegroundColor White
 
 }
