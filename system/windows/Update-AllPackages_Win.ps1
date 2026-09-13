@@ -289,6 +289,49 @@ function Get-WingetPackageServiceState {
     }
 }
 
+function Start-ServiceWithRetry {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [timespan]$Timeout = ([timespan]::FromSeconds(30)),
+        [int]$RetryCount = 3,
+        [timespan]$RetryDelay = ([timespan]::FromSeconds(5))
+    )
+
+    $Service = Get-Service -Name $Name -ErrorAction Stop
+    if ("$($Service.Status)" -eq "Running") { return "Running" }
+
+    # A freshly-installed/upgraded binary is sometimes still locked for a
+    # moment (e.g. by antivirus scanning or the outgoing process exiting), so
+    # Start-Service can fail transiently right after setup reports success.
+    # Retry briefly before giving up.
+    $LastError = $null
+    for ($Attempt = 1; $Attempt -le $RetryCount; $Attempt++) {
+        try {
+            Start-Service -Name $Name -ErrorAction Stop
+            $Service = Get-Service -Name $Name -ErrorAction Stop
+            $Service.WaitForStatus("Running", $Timeout)
+            $Service.Refresh()
+
+            if ("$($Service.Status)" -ne "Running") {
+                throw "Service '$Name' did not reach the Running state within $([int]$Timeout.TotalSeconds) seconds."
+            }
+
+            return "Restored"
+        }
+        catch {
+            $LastError = $_
+            if ($Attempt -lt $RetryCount) {
+                Write-Log "Attempt $Attempt of $RetryCount to start service '$Name' failed: $($_.Exception.Message). Retrying in $([int]$RetryDelay.TotalSeconds)s." -Level Warning
+                Start-Sleep -Seconds $RetryDelay.TotalSeconds
+            }
+        }
+    }
+
+    throw $LastError
+}
+
 function Restore-WingetPackageServiceState {
     [CmdletBinding()]
     param(
@@ -300,37 +343,7 @@ function Restore-WingetPackageServiceState {
 
     if (-not $ServiceState -or -not $ServiceState.WasRunning) { return "Skipped" }
 
-    $Service = Get-Service -Name $ServiceState.Name -ErrorAction Stop
-    if ("$($Service.Status)" -eq "Running") { return "Running" }
-
-    # A freshly-upgraded binary is sometimes still locked for a moment (e.g. by
-    # antivirus scanning or the outgoing process exiting), so Start-Service can
-    # fail transiently right after winget reports success. Retry briefly before
-    # giving up.
-    $LastError = $null
-    for ($Attempt = 1; $Attempt -le $RetryCount; $Attempt++) {
-        try {
-            Start-Service -Name $ServiceState.Name -ErrorAction Stop
-            $Service = Get-Service -Name $ServiceState.Name -ErrorAction Stop
-            $Service.WaitForStatus("Running", $Timeout)
-            $Service.Refresh()
-
-            if ("$($Service.Status)" -ne "Running") {
-                throw "Service '$($ServiceState.Name)' did not reach the Running state within $([int]$Timeout.TotalSeconds) seconds."
-            }
-
-            return "Restored"
-        }
-        catch {
-            $LastError = $_
-            if ($Attempt -lt $RetryCount) {
-                Write-Log "Attempt $Attempt of $RetryCount to start service '$($ServiceState.Name)' failed: $($_.Exception.Message). Retrying in $([int]$RetryDelay.TotalSeconds)s." -Level Warning
-                Start-Sleep -Seconds $RetryDelay.TotalSeconds
-            }
-        }
-    }
-
-    throw $LastError
+    return Start-ServiceWithRetry -Name $ServiceState.Name -Timeout $Timeout -RetryCount $RetryCount -RetryDelay $RetryDelay
 }
 
 function Test-UserWingetScheduledTaskDefinition {
@@ -1136,15 +1149,7 @@ function Update-SabnzbdFromOfficialRelease {
 
         if ($ServiceWasRunning) {
             try {
-                $Service = Get-Service -Name "SABnzbd" -ErrorAction Stop
-                if ("$($Service.Status)" -ne "Running") {
-                    Start-Service -Name "SABnzbd" -ErrorAction Stop
-                    $Service.WaitForStatus("Running", [timespan]::FromSeconds(30))
-                    $Service.Refresh()
-                }
-                if ("$($Service.Status)" -ne "Running") {
-                    throw "SABnzbd service did not return to the Running state."
-                }
+                $null = Start-ServiceWithRetry -Name "SABnzbd"
             }
             catch {
                 $RuntimeRestoreFailure = $_.Exception.Message

@@ -109,6 +109,9 @@ try {
     Assert-True `
         -Condition ($UpdaterSource.Contains('elseif ($Elevated)')) `
         -Message "Elevated child logging was not separated from the non-elevated parent log."
+    Assert-True `
+        -Condition ($UpdaterSource.Contains('Start-ServiceWithRetry -Name "SABnzbd"')) `
+        -Message "SABnzbd service restart did not reuse the retrying Start-ServiceWithRetry helper."
 
     $UpdaterTokens = $null
     $UpdaterParseErrors = $null
@@ -135,6 +138,7 @@ try {
     }
     foreach ($FunctionName in @(
             "Get-WingetPackageServiceState",
+            "Start-ServiceWithRetry",
             "Restore-WingetPackageServiceState",
             "Test-UserWingetScheduledTaskDefinition",
             "Invoke-UserWingetScheduledUpdate"
