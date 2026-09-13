@@ -24,7 +24,7 @@ For the freshest Claude Code releases, migrate once to Anthropic's native `lates
 
 | Script | Description |
 |--------|-------------|
-| `Update-AllPackages_Win.ps1` | Weekly updater for winget, Windows Store, Chocolatey, generic npm packages, WSL apt, and pip. It tracks Codex alpha and Claude next, updating each independently from the generic npm batch. |
+| `Update-AllPackages_Win.ps1` | Weekly updater for winget, Windows Store, Chocolatey, generic npm packages, WSL apt/Claude Code, and pip. It tracks Codex alpha and Claude next on Windows independently from the generic npm batch, and separately runs `claude update` as the default WSL user for the native Linux-side Claude Code install. |
 | `Update-AllPackages_Win.Core.ps1` | Side-effect-free parser, status, and atomic last-run record helpers used by the updater and tests. |
 | `Setup-PackageUpdateTasks.ps1` | Sets up a Windows Task Scheduler task for weekly updates and keeps the scheduled run window visible after completion. |
 | `tests/Test-Update-AllPackages_Win.ps1` | Dependency-free offline regression tests for WinGet parsing, status records, and task rendering. |
@@ -40,8 +40,9 @@ The Windows updater atomically writes `logs/Update-AllPackages_Win_<machine>_las
 
 | Script | Description |
 |--------|-------------|
-| `Update-AllPackages_Linux.sh` | Weekly updater for apt, snap, flatpak, npm, pip, and rustup. |
+| `Update-AllPackages_Linux.sh` | Weekly updater for apt, snap, flatpak, npm, Claude Code, pip, and rustup. Self-elevates to root, but runs `claude update` as the invoking (`SUDO_USER`) account so it targets that user's native `~/.local/bin/claude` install instead of root's. |
 | `Setup-PackageUpdateTasks_Linux.sh` | Installs/removes the Linux weekly cron schedule. |
+| `tests/test-package-update-scripts.sh` | Dependency-free offline regression tests for hermetic sourcing, summary notifications, Claude Code update statuses (including the root-vs-invoking-user guard), host-scoped log retention, and cron rendering/legacy cleanup. |
 
 ## Offline Package Updater Tests
 
@@ -53,4 +54,8 @@ These tests do not invoke package managers or modify live scheduler state.
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\system\windows\tests\Test-Update-AllPackages_Win.ps1
+```
+
+```bash
+bash system/linux/tests/test-package-update-scripts.sh
 ```

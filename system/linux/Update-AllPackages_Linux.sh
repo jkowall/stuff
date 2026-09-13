@@ -1,14 +1,17 @@
 #!/bin/bash
 
 # SYNOPSIS
-#     Weekly package update script for apt, snap, flatpak, npm, pip, and rustup.
+#     Weekly package update script for apt, snap, flatpak, npm, Claude Code, pip, and rustup.
 # DESCRIPTION
-#     Updates all packages from apt, snap, flatpak, npm global packages, pip, and rustup-managed Rust toolchains.
+#     Updates all packages from apt, snap, flatpak, npm global packages, Anthropic's native
+#     Claude Code updater, pip, and rustup-managed Rust toolchains.
 #     Logs all output to a timestamped file and shows desktop notifications.
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
+
+set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="$(dirname "$SCRIPT_DIR")/logs"
@@ -16,15 +19,14 @@ SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}" .sh)"
 MACHINE_NAME="$(hostname)"
 TIMESTAMP="$(date +%Y-%m-%d_%H-%m)"
 LOG_FILE="${LOG_DIR}/${SCRIPT_NAME}_${MACHINE_NAME}_${TIMESTAMP}.log"
-
-# Ensure log directory exists
-mkdir -p "$LOG_DIR"
+CLAUDE_CODE_BINARY="${CLAUDE_CODE_BINARY:-}"
 
 # Status tracking
 APT_STATUS="Skipped"
 SNAP_STATUS="Skipped"
 FLATPAK_STATUS="Skipped"
 NPM_STATUS="Skipped"
+CLAUDE_CODE_STATUS="Skipped"
 PIP_STATUS="Skipped"
 RUSTUP_STATUS="Skipped"
 
@@ -158,6 +160,68 @@ update_npm() {
     fi
 }
 
+update_claude_code() {
+    log "Info" "============================================================"
+    log "Info" "STARTING CLAUDE CODE UPDATE"
+    log "Info" "============================================================"
+
+    # This script self-elevates to root (see MAIN EXECUTION), and root's $HOME
+    # is /root, not the invoking user's home. Claude Code is installed
+    # per-user via the native installer (~/.local/bin/claude), so the update
+    # must run as the original user (SUDO_USER) or it silently targets the
+    # wrong (nonexistent) install path under /root.
+    local target_user="${SUDO_USER:-}"
+
+    if [ -z "$target_user" ] || [ "$target_user" = "root" ]; then
+        log "Info" "No non-root invoking user detected (run via sudo as a real user to enable this). Skipping Claude Code update."
+        CLAUDE_CODE_STATUS="Skipped"
+        return 0
+    fi
+
+    local claude_binary="$CLAUDE_CODE_BINARY"
+    if [ -z "$claude_binary" ]; then
+        local target_home=""
+        target_home="$(getent passwd "$target_user" | cut -d: -f6)"
+        if [ -z "$target_home" ]; then
+            log "Warning" "Could not resolve home directory for user ${target_user}. Skipping Claude Code update."
+            CLAUDE_CODE_STATUS="Warning"
+            return 1
+        fi
+        claude_binary="${target_home}/.local/bin/claude"
+    fi
+
+    if ! sudo -u "$target_user" test -x "$claude_binary"; then
+        log "Info" "Anthropic-native Claude Code not found at ${claude_binary} for user ${target_user}. Skipping."
+        CLAUDE_CODE_STATUS="Skipped"
+        return 0
+    fi
+
+    local current_version=""
+    current_version="$(sudo -u "$target_user" "$claude_binary" --version 2>>"$LOG_FILE")" || true
+    if [ -n "$current_version" ]; then
+        current_version="${current_version%%$'\n'*}"
+        log "Info" "Current Claude Code: $current_version"
+    fi
+
+    log "Info" "Running as ${target_user}: ${claude_binary} update"
+    if ! sudo -u "$target_user" "$claude_binary" update 2>&1 | tee -a "$LOG_FILE"; then
+        CLAUDE_CODE_STATUS="Warning"
+        log "Warning" "Claude Code native update encountered issues."
+        return 1
+    fi
+
+    local updated_version=""
+    if ! updated_version="$(sudo -u "$target_user" "$claude_binary" --version 2>>"$LOG_FILE")" || [ -z "$updated_version" ]; then
+        CLAUDE_CODE_STATUS="Warning"
+        log "Warning" "Claude Code updated, but version verification failed."
+        return 1
+    fi
+
+    updated_version="${updated_version%%$'\n'*}"
+    CLAUDE_CODE_STATUS="Success"
+    log "Success" "Claude Code is current on the configured release channel: $updated_version"
+}
+
 update_pip() {
     if ! command -v pip3 >/dev/null 2>&1; then
         log "Warning" "pip3 not found. Attempting to install..."
@@ -269,21 +333,23 @@ show_summary() {
 
     local has_errors=false
 
-    echo -e "APT:      $APT_STATUS"
-    echo -e "SNAP:     $SNAP_STATUS"
-    echo -e "FLATPAK:  $FLATPAK_STATUS"
-    echo -e "NPM:      $NPM_STATUS"
-    echo -e "PIP:      $PIP_STATUS"
-    echo -e "RUSTUP:   $RUSTUP_STATUS"
+    echo -e "APT:         $APT_STATUS"
+    echo -e "SNAP:        $SNAP_STATUS"
+    echo -e "FLATPAK:     $FLATPAK_STATUS"
+    echo -e "NPM:         $NPM_STATUS"
+    echo -e "CLAUDE CODE: $CLAUDE_CODE_STATUS"
+    echo -e "PIP:         $PIP_STATUS"
+    echo -e "RUSTUP:      $RUSTUP_STATUS"
 
-    log "Info" "APT:      $APT_STATUS"
-    log "Info" "SNAP:     $SNAP_STATUS"
-    log "Info" "FLATPAK:  $FLATPAK_STATUS"
-    log "Info" "NPM:      $NPM_STATUS"
-    log "Info" "PIP:      $PIP_STATUS"
-    log "Info" "RUSTUP:   $RUSTUP_STATUS"
+    log "Info" "APT:         $APT_STATUS"
+    log "Info" "SNAP:        $SNAP_STATUS"
+    log "Info" "FLATPAK:     $FLATPAK_STATUS"
+    log "Info" "NPM:         $NPM_STATUS"
+    log "Info" "CLAUDE CODE: $CLAUDE_CODE_STATUS"
+    log "Info" "PIP:         $PIP_STATUS"
+    log "Info" "RUSTUP:      $RUSTUP_STATUS"
 
-    if [[ "$APT_STATUS" == "Error" || "$SNAP_STATUS" == "Error" || "$FLATPAK_STATUS" == "Error" || "$NPM_STATUS" == "Error" || "$PIP_STATUS" == "Error" || "$RUSTUP_STATUS" == "Error" ]]; then
+    if [[ "$APT_STATUS" == "Error" || "$SNAP_STATUS" == "Error" || "$FLATPAK_STATUS" == "Error" || "$NPM_STATUS" == "Error" || "$CLAUDE_CODE_STATUS" == "Error" || "$PIP_STATUS" == "Error" || "$RUSTUP_STATUS" == "Error" ]]; then
         has_errors=true
     fi
 
@@ -306,52 +372,60 @@ cleanup_logs() {
 # MAIN EXECUTION
 # ============================================================================
 
-# Ensure the script is running as root (self-elevate)
-if [ "$EUID" -ne 0 ]; then
-    echo "This script requires root privileges for package updates. Elevating..."
-    exec sudo "$0" "$@"
-fi
-
-# Ensure log file exists and is owned by the actual user if possible, 
-# but for simplicity in system scripts, root-owned logs in script dir is fine.
-touch "$LOG_FILE"
-chmod 666 "$LOG_FILE" 2>/dev/null 
-
-log "Info" "============================================================"
-log "Info" "PACKAGE UPDATE STARTED (User=$(whoami), ActualUser=${SUDO_USER:-$(whoami)})"
-log "Info" "Script Directory: $SCRIPT_DIR"
-log "Info" "Log File: $LOG_FILE"
-log "Info" "============================================================"
-
-# Cleanup
-cleanup_logs
-
-# Show start notification
-# Note: notify-send as root needs to find the user session. 
-# We use SUDO_USER if available to try and show it on the correct desktop.
-if [ -n "$SUDO_USER" ]; then
-    if ! sudo -u "$SUDO_USER" DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u "$SUDO_USER")/bus \
-        notify-send -u low "Package Updates" "Starting updates for apt, snap, flatpak, npm, pip, and rustup..." >/dev/null 2>&1; then
-        log "Info" "Desktop notification environment unavailable. Skipping start notification."
+main() {
+    # Ensure the script is running as root (self-elevate)
+    if [ "$EUID" -ne 0 ]; then
+        echo "This script requires root privileges for package updates. Elevating..."
+        exec sudo "$0" "$@"
     fi
-else
-    show_notification "Package Updates Starting" "Updating apt, snap, flatpak, npm, pip, and rustup packages..." "low"
-fi
 
-# Run Updates
-update_apt
-update_snap
-update_flatpak
-update_npm
-update_pip
-update_rustup
+    # Ensure log directory and file exist. Root-owned logs in the script dir
+    # are fine for this system script's simplicity.
+    mkdir -p "$LOG_DIR"
+    touch "$LOG_FILE"
+    chmod 666 "$LOG_FILE" 2>/dev/null
 
-# Summary
-show_summary
+    log "Info" "============================================================"
+    log "Info" "PACKAGE UPDATE STARTED (User=$(whoami), ActualUser=${SUDO_USER:-$(whoami)})"
+    log "Info" "Script Directory: $SCRIPT_DIR"
+    log "Info" "Log File: $LOG_FILE"
+    log "Info" "============================================================"
 
-echo ""
-log "Info" "Update process completed."
-# No read-host equivalent usually needed in bash for non-interactive execution, but added for terminal clarity
-if [ -t 0 ]; then
-    read -p "Press Enter to close..."
+    # Cleanup
+    cleanup_logs
+
+    # Show start notification
+    # Note: notify-send as root needs to find the user session.
+    # We use SUDO_USER if available to try and show it on the correct desktop.
+    if [ -n "${SUDO_USER:-}" ]; then
+        if ! sudo -u "$SUDO_USER" DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u "$SUDO_USER")/bus \
+            notify-send -u low "Package Updates" "Starting updates for apt, snap, flatpak, npm, Claude Code, pip, and rustup..." >/dev/null 2>&1; then
+            log "Info" "Desktop notification environment unavailable. Skipping start notification."
+        fi
+    else
+        show_notification "Package Updates Starting" "Updating apt, snap, flatpak, npm, Claude Code, pip, and rustup packages..." "low"
+    fi
+
+    # Run Updates
+    update_apt
+    update_snap
+    update_flatpak
+    update_npm
+    update_claude_code
+    update_pip
+    update_rustup
+
+    # Summary
+    show_summary
+
+    echo ""
+    log "Info" "Update process completed."
+    # No read-host equivalent usually needed in bash for non-interactive execution, but added for terminal clarity
+    if [ -t 0 ]; then
+        read -p "Press Enter to close..."
+    fi
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    main "$@"
 fi

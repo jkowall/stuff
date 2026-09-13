@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    Weekly package update script for winget, Windows Store, Chocolatey, npm, WSL apt, and pip.
+    Weekly package update script for winget, Windows Store, Chocolatey, npm, WSL apt/Claude Code, and pip.
 .DESCRIPTION
     Updates all packages from winget, Windows Store, Chocolatey,
-    npm global packages, WSL Ubuntu (apt), and pip global packages.
+    npm global packages, WSL Ubuntu (apt and the native Claude Code installer), and pip global packages.
     Logs all output to a timestamped file and shows toast notifications.
 .NOTES
     Author: Auto-generated
@@ -67,6 +67,7 @@ $Results = @{
     ChocolateyAdmin = @{ Status = "Skipped"; Message = "" }
     Npm             = @{ Status = "Skipped"; Message = "" }
     Wsl             = @{ Status = "Skipped"; Message = "" }
+    WslClaude       = @{ Status = "Skipped"; Message = "" }
     Pip             = @{ Status = "Skipped"; Message = "" }
 }
 $FinalExitCode = 0
@@ -1399,6 +1400,73 @@ function Update-WslPackages {
     }
 }
 
+function Update-WslClaudeCode {
+    Write-Log ("=" * 60) -Level Info
+    Write-Log "STARTING WSL CLAUDE CODE UPDATE" -Level Info
+    Write-Log ("=" * 60) -Level Info
+
+    try {
+        $WslPath = Get-Command wsl.exe -ErrorAction Stop
+        Write-Log "Found wsl at: $($WslPath.Source)" -Level Info
+
+        $RawDistros = & wsl.exe -l -q 2>&1 | Out-String
+        $CleanDistros = $RawDistros -replace "`0", ""
+        if ($CleanDistros -notmatch "Ubuntu") {
+            throw "Ubuntu WSL distro not found (installed: $($CleanDistros.Trim()))"
+        }
+
+        # Deliberately run as the distro's default user, not root: Claude Code is
+        # installed per-user via the native installer (~/.local/bin/claude). Root's
+        # PATH instead resolves a Windows npm shim through the /mnt/c interop mount,
+        # which is a different install entirely and would silently update the wrong thing.
+        $ClaudeCheck = (& wsl.exe -d Ubuntu -- bash -lc "command -v claude" 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $ClaudeCheck) {
+            $script:Results.WslClaude.Status = "Skipped"
+            $script:Results.WslClaude.Message = "Claude Code not found in WSL Ubuntu (expected native install at ~/.local/bin/claude)"
+            Write-Log $script:Results.WslClaude.Message -Level Info
+            return
+        }
+        Write-Log "Found WSL claude at: $ClaudeCheck" -Level Info
+
+        $CurrentVersion = (& wsl.exe -d Ubuntu -- bash -lc "claude --version" 2>&1 | Out-String).Trim()
+        Write-Log "Current WSL Claude Code: $CurrentVersion" -Level Info
+
+        Write-Log "Running as WSL default user: claude update" -Level Info
+        $UpdateOutput = & wsl.exe -d Ubuntu -- bash -lc "claude update" 2>&1
+        $UpdateExitCode = $LASTEXITCODE
+        foreach ($Line in $UpdateOutput) {
+            if ($Line) {
+                Write-Log "$Line" -Level Info
+            }
+        }
+
+        if ($UpdateExitCode -ne 0 -and $null -ne $UpdateExitCode) {
+            $script:Results.WslClaude.Status = "Warning"
+            $script:Results.WslClaude.Message = "claude update completed with exit code: $UpdateExitCode"
+            Write-Log $script:Results.WslClaude.Message -Level Warning
+            return
+        }
+
+        $UpdatedVersion = (& wsl.exe -d Ubuntu -- bash -lc "claude --version" 2>&1 | Out-String).Trim()
+        if (-not $UpdatedVersion) {
+            $script:Results.WslClaude.Status = "Warning"
+            $script:Results.WslClaude.Message = "Claude Code updated, but version verification failed."
+            Write-Log $script:Results.WslClaude.Message -Level Warning
+            return
+        }
+
+        $script:Results.WslClaude.Status = "Success"
+        $script:Results.WslClaude.Message = "WSL Claude Code is current: $UpdatedVersion (was: $CurrentVersion)"
+        Write-Log $script:Results.WslClaude.Message -Level Success
+    }
+    catch {
+        $script:Results.WslClaude.Status = "Error"
+        $script:Results.WslClaude.Message = $_.Exception.Message
+        Write-Log "WSL Claude Code update failed: $($_.Exception.Message)" -Level Error
+        Show-ToastNotification -Title "WSL Claude Code Update Failed" -Message $_.Exception.Message -Type Error
+    }
+}
+
 function Update-Pip {
     Write-Log ("=" * 60) -Level Info
     Write-Log "STARTING PIP UPDATES" -Level Info
@@ -1992,7 +2060,7 @@ if ($OldLogs) {
 
 # Show start notification
 if (-not $UserWingetOnly) {
-    Show-ToastNotification -Title "Package Updates Starting" -Message "Updating winget, Windows Store, Chocolatey, npm, WSL apt, and pip packages..." -Type Info
+    Show-ToastNotification -Title "Package Updates Starting" -Message "Updating winget, Windows Store, Chocolatey, npm, WSL apt/Claude Code, and pip packages..." -Type Info
 }
 
 # Handle split execution (User vs Elevated)
@@ -2092,7 +2160,10 @@ else {
             }
             if (-not $SkipAdminChocolatey) { Update-Chocolatey }
             if (-not $SkipNpm) { Update-NpmGlobal }
-            if (-not $SkipWsl) { Update-WslPackages }
+            if (-not $SkipWsl) {
+                Update-WslPackages
+                Update-WslClaudeCode
+            }
             if (-not $SkipPip) { Update-Pip }
             $Results.Execution.Status = "Success"
             $Results.Execution.Message = "Exclusive package update execution completed"

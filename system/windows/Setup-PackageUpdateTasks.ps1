@@ -5,7 +5,7 @@
     Creates an elevated weekly task plus an on-demand limited-privilege task for
     user-only WinGet packages such as Spotify.
     Can also be used to update or remove scheduled tasks and clean up legacy entries.
-    The update script covers winget, Windows Store, Chocolatey, npm, WSL apt, and pip.
+    The update script covers winget, Windows Store, Chocolatey, npm, WSL apt/Claude Code, and pip.
 .PARAMETER Remove
     Remove the scheduled task instead of creating it.
 .PARAMETER InstallBurntToast
@@ -76,7 +76,7 @@ function Get-PackageUpdateTaskSpec {
             logonType = "Interactive"
             runLevel  = "Highest"
         }
-        description = "Weekly update of winget, Windows Store, Chocolatey, npm, WSL apt, and pip packages. Runs every Saturday at 1:00 AM."
+        description = "Weekly update of winget, Windows Store, Chocolatey, npm, WSL apt/Claude Code, and pip packages. Runs every Saturday at 1:00 AM."
     }
 }
 
