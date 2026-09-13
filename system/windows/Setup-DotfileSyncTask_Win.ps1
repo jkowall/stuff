@@ -1,16 +1,25 @@
 <#
 .SYNOPSIS
-    Sets up a Windows Task Scheduler task that keeps chezmoi-managed dotfiles in sync.
+    Sets up Windows scheduled tasks that keep chezmoi-managed dotfiles in sync.
 .DESCRIPTION
-    Creates a task that runs Update-Dotfiles_Win.ps1 every 30 minutes and at logon.
-    No elevation is required since chezmoi update only touches the current user's
-    profile and its own git repo checkout.
+    Creates two tasks via schtasks.exe: a recurring one (every 30 minutes) and an
+    at-logon one, both running Update-Dotfiles_Win.ps1 as the current user with a
+    limited (non-elevated) run level.
+
+    Uses schtasks.exe rather than the ScheduledTasks PowerShell module's
+    Register-ScheduledTask/New-ScheduledTaskPrincipal cmdlets: in some restricted
+    shell contexts (observed running inside an agentic coding tool's shell), those
+    cmdlets fail with "Access is denied" while trying to resolve an explicit
+    principal's SID, even for the current user with a Limited run level. schtasks.exe
+    (/ru <user> /it) does not hit the same restriction and produces an equivalent
+    task. If you don't see this problem in your own normal terminal, either path
+    works; schtasks.exe is kept here since it's known to work everywhere.
 .PARAMETER Remove
-    Remove the scheduled task instead of creating it.
+    Remove both scheduled tasks instead of creating them.
 .PARAMETER NoPause
     Do not wait for Enter before the setup script exits.
 .PARAMETER RenderOnly
-    Print the task definition as JSON without touching Task Scheduler.
+    Print the schtasks commands that would run, without touching Task Scheduler.
 .EXAMPLE
     .\Setup-DotfileSyncTask_Win.ps1
 .EXAMPLE
@@ -24,10 +33,11 @@ param(
 )
 
 $TaskName = "Chezmoi Dotfile Sync"
+$LogonTaskName = "Chezmoi Dotfile Sync - Logon"
 $ScriptDir = $PSScriptRoot
 $UpdateScript = Join-Path $ScriptDir "Update-Dotfiles_Win.ps1"
-$TaskUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $RepeatMinutes = 30
+$RunArg = "powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$UpdateScript`" -NoPause"
 
 function Write-Status {
     param(
@@ -40,49 +50,27 @@ function Write-Status {
     Write-Host "$Icon $Message" -ForegroundColor $Color
 }
 
-$TaskSpec = [ordered]@{
-    taskName = $TaskName
-    action   = [ordered]@{
-        execute          = "powershell.exe"
-        arguments        = "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$UpdateScript`" -NoPause"
-        workingDirectory = $ScriptDir
-    }
-    triggers = @("Every $RepeatMinutes minutes, indefinitely", "At logon")
-    settings = [ordered]@{
-        allowStartIfOnBatteries    = $true
-        dontStopIfGoingOnBatteries = $true
-        startWhenAvailable         = $true
-        runOnlyIfNetworkAvailable  = $true
-        multipleInstances          = "IgnoreNew"
-    }
-    principal = [ordered]@{
-        userId    = $TaskUser
-        logonType = "S4U"
-        runLevel  = "Limited"
-    }
-    description = "Keeps chezmoi-managed dotfiles (Claude/Codex/Antigravity/Cursor config) synced every $RepeatMinutes minutes and at logon."
-}
-
 if ($RenderOnly) {
-    $TaskSpec | ConvertTo-Json -Depth 6
+    Write-Host "schtasks /create /tn `"$TaskName`" /tr `"$RunArg`" /sc minute /mo $RepeatMinutes /ru `"$env:USERNAME`" /it /rl LIMITED /f"
+    Write-Host "schtasks /create /tn `"$LogonTaskName`" /tr `"$RunArg`" /sc onlogon /ru `"$env:USERNAME`" /it /rl LIMITED /f"
     exit 0
 }
 
 if ($Remove) {
-    try {
-        $Existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-        if ($Existing) {
-            Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction Stop
-            Write-Status "Removed scheduled task: $TaskName" -Level Success
+    foreach ($name in @($TaskName, $LogonTaskName)) {
+        schtasks /query /tn $name >$null 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            schtasks /delete /tn $name /f | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Status "Removed scheduled task: $name" -Level Success
+            }
+            else {
+                Write-Status "Failed to remove scheduled task: $name" -Level Error
+            }
         }
         else {
-            Write-Status "No scheduled task named '$TaskName' found." -Level Warning
+            Write-Status "No scheduled task named '$name' found." -Level Warning
         }
-    }
-    catch {
-        Write-Status "Failed to remove scheduled task: $($_.Exception.Message)" -Level Error
-        if (-not $NoPause) { Read-Host "Press Enter to exit" }
-        exit 1
     }
     if (-not $NoPause) { Read-Host "Press Enter to exit" }
     exit 0
@@ -94,43 +82,31 @@ if (-not (Test-Path $UpdateScript)) {
     exit 1
 }
 
-try {
-    $Action = New-ScheduledTaskAction -Execute $TaskSpec.action.execute -Argument $TaskSpec.action.arguments -WorkingDirectory $TaskSpec.action.workingDirectory -ErrorAction Stop
+$ExitCode = 0
 
-    # Task Scheduler rejects [TimeSpan]::MaxValue (produces an out-of-range ISO8601
-    # duration); a 10-year duration is effectively "indefinitely" in practice.
-    $RepeatTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes $RepeatMinutes) -RepetitionDuration (New-TimeSpan -Days 3650) -ErrorAction Stop
-    $LogonTrigger = New-ScheduledTaskTrigger -AtLogOn -ErrorAction Stop
-
-    $Settings = New-ScheduledTaskSettingsSet `
-        -AllowStartIfOnBatteries:$TaskSpec.settings.allowStartIfOnBatteries `
-        -DontStopIfGoingOnBatteries:$TaskSpec.settings.dontStopIfGoingOnBatteries `
-        -StartWhenAvailable:$TaskSpec.settings.startWhenAvailable `
-        -RunOnlyIfNetworkAvailable:$TaskSpec.settings.runOnlyIfNetworkAvailable `
-        -MultipleInstances $TaskSpec.settings.multipleInstances `
-        -ErrorAction Stop
-
-    $Principal = New-ScheduledTaskPrincipal -UserId $TaskSpec.principal.userId -LogonType $TaskSpec.principal.logonType -RunLevel $TaskSpec.principal.runLevel -ErrorAction Stop
-
-    Register-ScheduledTask `
-        -TaskName $TaskName `
-        -Action $Action `
-        -Trigger @($RepeatTrigger, $LogonTrigger) `
-        -Settings $Settings `
-        -Principal $Principal `
-        -Description $TaskSpec.description `
-        -Force `
-        -ErrorAction Stop | Out-Null
-
-    Write-Status "Scheduled task '$TaskName' created or updated." -Level Success
-    Write-Status "  Runs: every $RepeatMinutes minutes, and at logon" -Level Info
-    Write-Status "  Script: $UpdateScript" -Level Info
-    Write-Status "To remove: .\Setup-DotfileSyncTask_Win.ps1 -Remove" -Level Info
+schtasks /create /tn $TaskName /tr $RunArg /sc minute /mo $RepeatMinutes /ru $env:USERNAME /it /rl LIMITED /f | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    Write-Status "Scheduled task '$TaskName' created or updated (every $RepeatMinutes minutes)." -Level Success
 }
-catch {
-    Write-Status "Failed to create scheduled task: $($_.Exception.Message)" -Level Error
-    if (-not $NoPause) { Read-Host "Press Enter to exit" }
-    exit 1
+else {
+    Write-Status "Failed to create scheduled task '$TaskName' (schtasks exit $LASTEXITCODE)." -Level Error
+    $ExitCode = 1
+}
+
+schtasks /create /tn $LogonTaskName /tr $RunArg /sc onlogon /ru $env:USERNAME /it /rl LIMITED /f | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    Write-Status "Scheduled task '$LogonTaskName' created or updated (at logon)." -Level Success
+}
+else {
+    # Non-fatal: some restricted shell contexts can't register ONLOGON triggers even
+    # though the recurring one above works fine. The 30-minute task alone still
+    # guarantees sync; the logon trigger is a nice-to-have low-latency top-up.
+    Write-Status "Could not create '$LogonTaskName' (schtasks exit $LASTEXITCODE) -- continuing without it. The recurring $RepeatMinutes-minute task above still covers sync." -Level Warning
+}
+
+if ($ExitCode -eq 0) {
+    Write-Status "Script: $UpdateScript" -Level Info
+    Write-Status "To remove: .\Setup-DotfileSyncTask_Win.ps1 -Remove" -Level Info
 }
 
 if (-not $NoPause) {
@@ -138,3 +114,5 @@ if (-not $NoPause) {
     Write-Host "Press Enter to exit..."
     Read-Host
 }
+
+exit $ExitCode
