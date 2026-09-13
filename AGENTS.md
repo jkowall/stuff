@@ -6,8 +6,8 @@ This file provides centralized instructions for all AI coding assistants working
 
 This is a personal scripts collection containing PowerShell (.ps1), shell (.sh), and Python (.py) scripts organized into subdirectories:
 
-- **`backup/`** - LLM configuration sync and Plex backup
-- **`skills/`** - Public, portable procedural skills installed through the LLM sync scripts
+- **`backup/`** - Plex backup
+- **`skills/`** - Public, portable procedural skills, copied directly into each assistant's skills directory
 - **`system/`** - Package management, DNS updates, system maintenance
 - **`media/`** - Video conversion and media downloading
 
@@ -35,9 +35,6 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 | File | Contains |
 |------|----------|
 | `Update-CloudflareDNS.json` | Cloudflare API token, Zone ID, domain name |
-| `LLM_Sync_Win.json` | Personal backup directory path |
-| `LLM_Sync_Mac.json` | Personal backup directory path |
-| `LLM_Sync_Linux.json` | Personal backup directory path |
 | `plex_backup.json` | Local paths for Plex data, backups, and tools |
 
 **Never hardcode credentials or sensitive personal data directly in scripts.** Always ensure scripts point to the centralized location in the `Private` repository.
@@ -66,7 +63,6 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 - **`system/macos/audit_apps.sh`** - Audits installed Mac GUI apps
 - **`system/macos/sync_apps.sh`** - Syncs Mac apps between machines
 - **`backup/plex_backup.ps1`** - Requires admin privileges, stops Plex services during backup
-- **`backup/LLM_Sync_*`** - Cross-platform sync suite (Win/Mac/Linux) for portable Codex, Gemini, Claude, Agents, shared `.skills` settings, and repository skill installation
 
 ### Workflow Skill Guidelines
 
@@ -77,15 +73,6 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 - When packages are added or renamed, update `skills/README.md`, the root `README.md`, and verify all three `install-repo-skills` actions.
 
 ## Coding Guidelines
-
-### Common Patterns across Sync Scripts
-
-1. **Pre-restore Safety**: Always implement a "safety backup" of current local settings before performing a restoration. Store these in a non-Git tracked directory (default: `/tmp" or "D:\tmp`) and keep only the latest 2 versions.
-2. **Whitelist Synch**: Use a whitelist approach for assistant configuration (especially `.gemini`). Only sync known configuration files (JSON, PB, TXT) and specific user folders (`knowledge`, `scratch`). Explicitly exclude transient/large data like browser profiles and machine-specific AI indices.
-3. **Interactive Menus**: Use arrow-key navigable menus for action selection and backup choice.
-4. **CLI Verification**: Check for the presence of required CLIs before execution.
-4. **Versioning & Pruning**: Support timestamped folder creation (e.g., `-v` flag) paired with a 30-day auto-pruning logic for maintenance.
-5. **Diff Preview**: Offer users a logic-based comparison (diff) of settings files before overwriting local data.
 
 ### PowerShell Scripts
 
@@ -151,10 +138,7 @@ git config commit.gpgsign true
 ├── LLM_Instructions.md               # Public-safe professional identity and working preferences
 ├── LICENSE                            # License file
 │
-├── backup/                            # Backup & Sync
-│   ├── LLM_Sync_Win.ps1               # Windows Codex/Gemini/Claude/Agents/shared-skills sync
-│   ├── LLM_Sync_Mac.sh                # macOS Codex/Gemini/Claude/Agents/shared-skills sync
-│   ├── LLM_Sync_Linux.sh              # Linux Codex/Gemini/Claude/Agents/shared-skills sync
+├── backup/                            # Backup
 │   └── plex_backup.ps1               # Plex Media Server backup
 │
 ├── skills/                            # Portable workflow skills

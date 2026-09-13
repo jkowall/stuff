@@ -14,25 +14,10 @@ A collection of PowerShell and shell scripts for system automation, backup, and 
 
 ## Scripts
 
-### Backup & Sync
-
-LLM Sync scripts provide a cross-platform backup, restore, and skill mirror flow for assistant home directories and a shared `~/.skills` folder.
-
-**Key Features:**
-
-- **Per-Assistant Subdirectories**: Each machine backup stores `codex/`, `gemini/`, `claude/`, `agents/`, `shared-skills/`, and portable `app-configs/` separately for safer restores.
-- **Shared Skill Mirror**: `sync-skills` unions Codex and Claude skills into `~/.skills`, then mirrors the shared set back into both assistant-local skill directories without deleting extra local skill folders.
-- **Repository Skill Installer**: `install-repo-skills` safely installs or updates every skill in this repository, preserving differing installed copies before replacement. Skill-only actions do not require backup configuration.
-- **Conservative Whitelisting**: Sync only portable config, prompts, rules, memories, skills, Antigravity and Antigravity IDE config, and app metadata. Skip auth/session files, caches, logs, local databases, browser profiles, and project-local conversation state.
-- **Safety Restore Flow**: Restore creates a pre-restore snapshot outside Git and can preview diffs for key text config files before overwrite.
-- **Scoped Git Integration**: Optional pull before sync and push after backup, staging only the selected backup subtree instead of unrelated repo changes.
-- **Dry Run Support**: Preview file operations and Git mutations before changing anything.
+### Backup
 
 | Script | Description |
 |--------|-------------|
-| [`LLM_Sync_Win.ps1`](backup/LLM_Sync_Win.ps1) | Windows backup and restore for portable Codex, Gemini, Claude, Agents, and shared `.skills` settings. Gemini restore skips volatile Antigravity state. |
-| [`LLM_Sync_Mac.sh`](backup/LLM_Sync_Mac.sh) | macOS backup and restore for portable Codex, Gemini, Claude, Agents, and shared `.skills` settings. Gemini restore skips volatile Antigravity state. |
-| [`LLM_Sync_Linux.sh`](backup/LLM_Sync_Linux.sh) | Linux backup and restore for portable Codex, Gemini, Claude, Agents, and shared `.skills` settings. Gemini restore skips volatile Antigravity state. |
 | [`plex_backup.ps1`](backup/plex_backup.ps1) | Backup Plex Media Server data and registry settings to a compressed 7z archive. Handles service stop/start automatically. |
 
 ### Workflow Skills
@@ -48,8 +33,8 @@ The [`skills/`](skills/README.md) catalog contains seven reusable workflows:
 - validated upstream technical proposals and PR slicing
 
 Each package documents its inputs, evidence order, procedure, mutation boundaries,
-output, and stopping conditions. Install all of them with the platform LLM sync
-script; see the examples below or the [skill catalog](skills/README.md).
+output, and stopping conditions. See the [skill catalog](skills/README.md) for
+installation instructions.
 
 ### System Maintenance
 
@@ -129,37 +114,16 @@ The Cloudflare dynamic DNS updater can install or remove its own daily Windows T
 
 ## Configuration
 
-Backup and restore actions use external JSON config files stored in your **Private repository** (`C:\Users\jkowa\Private\Configs`). These config files are **not tracked in Git** here to protect sensitive data. `audit`, `sync-skills`, `migrate-skills`, and `install-repo-skills` do not require them.
+Backup actions use external JSON config files stored in your **Private repository** (`C:\Users\jkowa\Private\Configs`). These config files are **not tracked in Git** here to protect sensitive data.
 
 ### Required Config Files (In Private Repo)
 
 | Config File | Required By | Keys |
 |-------------|-------------|------|
 | `Update-CloudflareDNS.json` | `Update-CloudflareDNS.ps1` | `ApiToken`, `ZoneId`, `DnsRecordName`, `TtlValue` |
-| `LLM_Sync_Win.json` | `LLM_Sync_Win.ps1` | `BaseBackupPath`, `PreRestorePath` (optional) |
-| `LLM_Sync_Mac.json` | `LLM_Sync_Mac.sh` | `DefaultBackupPath`, `PreRestorePath` (optional) |
-| `LLM_Sync_Linux.json` | `LLM_Sync_Linux.sh` | `DefaultBackupPath`, `PreRestorePath` (optional) |
 | `plex_backup.json` | `plex_backup.ps1` | `PlexDataPath`, `BackupDestination`, `TempWorkingPath`, `7ZipPath` |
 
 ### Example Config Templates
-
-**LLM_Sync_Win.json:**
-
-```json
-{
-    "BaseBackupPath": "C:\\Users\\jkowa\\OneDrive\\Stuff\\assistant-backups",
-    "PreRestorePath": "D:\\tmp"
-}
-```
-
-**LLM_Sync_Mac.json / LLM_Sync_Linux.json:**
-
-```json
-{
-    "DefaultBackupPath": "~/assistant-backups",
-    "PreRestorePath": "/tmp"
-}
-```
 
 **Update-CloudflareDNS.json:**
 
@@ -181,104 +145,6 @@ Backup and restore actions use external JSON config files stored in your **Priva
     "TempWorkingPath": "D:\\tmp",
     "7ZipPath": "C:\\path\\to\\7z.exe"
 }
-```
-
-### LLM Sync Examples
-
-**Windows backup (default machine folder):**
-
-```powershell
-.\backup\LLM_Sync_Win.ps1 -Action backup
-```
-
-**Windows versioned backup preview only:**
-
-```powershell
-.\backup\LLM_Sync_Win.ps1 -Action backup -Versioned -DryRun
-```
-
-**Windows shared skill sync preview:**
-
-```powershell
-.\backup\LLM_Sync_Win.ps1 -Action sync-skills -DryRun
-```
-
-**Windows install or update repository skills:**
-
-```powershell
-.\backup\LLM_Sync_Win.ps1 -Action install-repo-skills -DryRun
-.\backup\LLM_Sync_Win.ps1 -Action install-repo-skills
-```
-
-**Windows restore preview using PowerShell WhatIf:**
-
-```powershell
-.\backup\LLM_Sync_Win.ps1 -Action restore -WhatIf
-```
-
-**Linux backup preview only:**
-
-```bash
-./backup/LLM_Sync_Linux.sh backup --dry-run
-```
-
-**Linux shared skill sync:**
-
-```bash
-./backup/LLM_Sync_Linux.sh sync-skills
-```
-
-**Linux install or update repository skills:**
-
-```bash
-./backup/LLM_Sync_Linux.sh install-repo-skills --dry-run
-./backup/LLM_Sync_Linux.sh install-repo-skills
-```
-
-**Linux backup with explicit machine name:**
-
-```bash
-./backup/LLM_Sync_Linux.sh backup --machine-name=JKWORK
-```
-
-**macOS restore preview only:**
-
-```bash
-./backup/LLM_Sync_Mac.sh restore --dry-run
-```
-
-**macOS shared skill sync:**
-
-```bash
-./backup/LLM_Sync_Mac.sh sync-skills
-```
-
-**macOS install or update repository skills:**
-
-```bash
-./backup/LLM_Sync_Mac.sh install-repo-skills --dry-run
-./backup/LLM_Sync_Mac.sh install-repo-skills
-```
-
-**macOS backup with normalized machine name:**
-
-```bash
-./backup/LLM_Sync_Mac.sh backup
-```
-
-On macOS and Linux, the backup folder now defaults to the short host name without any domain suffix, so a host like `JKWORK.local` backs up under `JKWORK`. You can override that with `--machine-name=<name>`.
-
-**Backup layout:**
-
-```text
-<BaseBackupPath>/
-  <machine-name>/
-    codex/
-    gemini/
-    claude/
-    agents/
-    shared-skills/
-    app-configs/
 ```
 
 ## Prerequisites

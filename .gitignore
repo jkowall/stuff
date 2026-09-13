@@ -3,9 +3,6 @@
 
 # Config files with personal data
 Update-CloudflareDNS.json
-LLM_Sync_Win.json
-LLM_Sync_Mac.json
-LLM_Sync_Linux.json
 plex_backup.json
 
 # macOS metadata and local artifacts
@@ -19,5 +16,3 @@ system/logs/
 system/macos/*.json
 system/macos/*.log
 
-# Local LLM/IDE config backups (personal data, mirror of ~/Private/LLM)
-assistant-backups/

@@ -24,44 +24,25 @@ duplicate private product knowledge.
 
 ## Install or Update
 
-Run the command from the repository root. Preview first if the destination already
-contains skills with the same names.
+Copy the skill directories you want directly into each assistant's skills folder.
+Check for a same-named existing copy first if you have local customizations.
 
-### macOS
-
-```bash
-./backup/LLM_Sync_Mac.sh install-repo-skills --dry-run
-./backup/LLM_Sync_Mac.sh install-repo-skills
-```
-
-### Linux
+### macOS / Linux
 
 ```bash
-./backup/LLM_Sync_Linux.sh install-repo-skills --dry-run
-./backup/LLM_Sync_Linux.sh install-repo-skills
+cp -r skills/<skill-name> ~/.claude/skills/
+cp -r skills/<skill-name> ~/.codex/skills/
 ```
 
 ### Windows
 
 ```powershell
-.\backup\LLM_Sync_Win.ps1 -Action install-repo-skills -DryRun
-.\backup\LLM_Sync_Win.ps1 -Action install-repo-skills
+Copy-Item -Recurse skills\<skill-name> ~\.claude\skills\
+Copy-Item -Recurse skills\<skill-name> ~\.codex\skills\
 ```
 
-The installer validates that every package has frontmatter with a matching `name`
-and a non-empty `description`, copies the packages into the canonical `~/.skills`
-store, and mirrors them into `~/.codex/skills` and `~/.claude/skills`. It does not
-delete unrelated skills. If a same-named installed
-copy differs, the previous copy is preserved below
-`~/.skills/.conflicts/repo-install/<timestamp>/` before replacement.
-
-Dry-run output distinguishes packages that would change from packages already
-current and reports the planned totals without claiming that archives were written.
-
-The install, audit, and skill-sync actions do not require an LLM backup config file.
-Backup and restore actions still require the platform-specific private JSON config.
 Restart or open a new assistant session after installation so it refreshes its skill
-catalog. Re-run the same install command after pulling repository updates.
+catalog. Re-run the same copy after pulling repository updates to pick up changes.
 
 ## Safety Model
 
