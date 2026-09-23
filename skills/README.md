@@ -16,6 +16,7 @@ private communications, or private or internal identifiers.
 | [`feature-feedback-batch-cleanup`](feature-feedback-batch-cleanup/SKILL.md) | Deterministic, resumable cleanup of a Featurebase or product-feedback backlog | Reconciled batch ledger and exact resume point |
 | [`contract-change-review`](contract-change-review/SKILL.md) | Reviewing contract redlines, amendments, placeholders, and execution readiness | Classified findings register and optional unsent response draft |
 | [`validated-upstream-proposal`](validated-upstream-proposal/SKILL.md) | Turning technical feedback into a validated upstream design and PR plan | Publish-ready proposal or exact evidence blocker |
+| [`youtube-batch-video-upload`](youtube-batch-video-upload/SKILL.md) | Bulk-uploading a folder of video clips to YouTube with templated title/description/tags | Per-file publish status and video URLs, or exact quota/confirmation blocker |
 
 `feature-feedback-batch-cleanup` coordinates an installed single-item feedback
 triage policy when one is available. That policy remains the authority for per-item
