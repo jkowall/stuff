@@ -24,10 +24,19 @@ param (
     [ValidateSet('firefox', 'chrome', 'edge', 'brave', 'chromium', 'opera', 'vivaldi')]
     [string]$Browser = 'firefox',
 
-    [switch]$RefreshCookies
+    [switch]$RefreshCookies,
+
+    # Overwrite an existing file without asking
+    [switch]$Force,
+
+    # Scan download folders for leftover fragments/partials and offer to delete them
+    [switch]$Cleanup
 )
 
-$ErrorActionPreference = 'Stop'
+# yt-dlp emits UTF-8; without this, titles with characters like the full-width bar get mangled
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+$ErrorActionPreference = 'Continue'
 
 $music_dir   = "E:\vid\music"
 $listen_dir  = "D:\listen"
@@ -73,14 +82,48 @@ $common = @(
 function Invoke-YtDlp([string[]]$ytArgs) {
     $cookieArgs = @()
     if (Test-Path $cookiesFile) { $cookieArgs = @('--cookies', $cookiesFile) }
-    & yt-dlp.exe @cookieArgs @common @ytArgs
-    return $LASTEXITCODE
+    # Out-Host keeps yt-dlp output on screen instead of leaking into the return value
+    & yt-dlp.exe @cookieArgs @common @ytArgs | Out-Host
+    return [int]$LASTEXITCODE
 }
 
 # ---- Cookie refresh only ----
 if ($RefreshCookies) {
     Require-Tool yt-dlp.exe
     if (Update-Cookies) { exit 0 } else { exit 1 }
+}
+
+# ---- Leftover scan: -Cleanup ----
+function Get-Leftovers([string]$dir) {
+    if (-not (Test-Path $dir)) { return }
+    $files = Get-ChildItem -LiteralPath $dir -File -Force
+    foreach ($f in $files) {
+        if ($f.Name -match '\.(part|ytdl|temp)$' -or $f.Name -match '\.part-Frag\d+$') {
+            [pscustomobject]@{ File = $f; Kind = 'partial'; Safe = $false }
+        } elseif ($f.Name -match '^(?<base>.+)\.f\d+\.\w+$') {
+            $base = $Matches['base']
+            $hasFinal = $files | Where-Object {
+                $_.Name -ne $f.Name -and $_.Name.StartsWith("$base.") -and $_.Name -notmatch '\.f\d+\.\w+$' -and $_.Name -notmatch '\.(part|ytdl|temp)$'
+            }
+            [pscustomobject]@{ File = $f; Kind = 'fragment'; Safe = [bool]$hasFinal }
+        }
+    }
+}
+
+if ($Cleanup) {
+    $items = @($music_dir, $listen_dir | ForEach-Object { Get-Leftovers $_ })
+    if (-not $items) { Write-Host "No leftovers found."; exit 0 }
+    $items | ForEach-Object {
+        $tag = if ($_.Safe) { 'DELETE (merged copy exists)' } elseif ($_.Kind -eq 'partial') { 'DELETE (incomplete download)' } else { 'KEEP   (no merged copy, may be your only file)' }
+        Write-Host ("{0,-46} {1,9:N1} MB  {2}" -f $tag, ($_.File.Length / 1MB), $_.File.FullName)
+    }
+    $del = @($items | Where-Object { $_.Safe -or $_.Kind -eq 'partial' })
+    if ($del) {
+        $total = ($del | ForEach-Object { $_.File.Length } | Measure-Object -Sum).Sum / 1MB
+        $ans = Read-Host ("Delete {0} file(s), {1:N0} MB? (y/N)" -f $del.Count, $total)
+        if ($ans -match '^(y|yes)$') { $del | ForEach-Object { Remove-Item -LiteralPath $_.File.FullName -Force }; Write-Host "Deleted." }
+    }
+    exit 0
 }
 
 if (-not $url) {
@@ -131,6 +174,37 @@ if ($Mode -eq 'Mp3') {
     $ytArgs = @('--format', $fmt, '-o', "$music_dir\%(title)s.%(ext)s", $url)
 }
 
+# ---- Existing file check: compare and ask before overwriting ----
+$cookieArgs = @(); if (Test-Path $cookiesFile) { $cookieArgs = @('--cookies', $cookiesFile) }
+$info = & yt-dlp.exe @cookieArgs --no-warnings --print '%(filename)s|%(filesize_approx)s|%(duration)s' @ytArgs 2>$null |
+    Select-Object -Last 1
+if ($info) {
+    $parts = $info -split '\|'
+    $target = $parts[0]
+    if ($Mode -eq 'Mp3') { $target = [IO.Path]::ChangeExtension($target, 'mp3') }
+    if (Test-Path -LiteralPath $target) {
+        $existing = Get-Item -LiteralPath $target
+        $remoteSize = 0L; [void][long]::TryParse($parts[1], [ref]$remoteSize)
+        Write-Host ""
+        Write-Host "Already exists: $target" -ForegroundColor Yellow
+        Write-Host ("  Local : {0:N1} MB, modified {1}" -f ($existing.Length / 1MB), $existing.LastWriteTime)
+        if ($Mode -eq 'Video' -and $remoteSize -gt 0) {
+            $pct = [math]::Round(100 * $existing.Length / $remoteSize)
+            Write-Host ("  Remote: ~{0:N1} MB estimated (local is {1}% of that)" -f ($remoteSize / 1MB), $pct)
+        }
+        if ($parts[2] -and $parts[2] -ne 'NA') {
+            Write-Host ("  Remote duration: {0}" -f [TimeSpan]::FromSeconds([double]$parts[2]).ToString())
+        }
+        if ($Force) {
+            Write-Host "-Force given, overwriting."
+        } else {
+            $ans = Read-Host "Overwrite? (y/N)"
+            if ($ans -notmatch '^(y|yes)$') { Write-Host "Skipped."; exit 0 }
+        }
+        $ytArgs = @('--force-overwrites') + $ytArgs
+    }
+}
+
 $code = Invoke-YtDlp $ytArgs
 
 # One automatic retry with fresh cookies and a fresh yt-dlp if the first attempt failed
@@ -139,6 +213,15 @@ if ($code -ne 0) {
     & yt-dlp.exe -U 2>&1 | Out-Host
     [void](Update-Cookies)
     $code = Invoke-YtDlp $ytArgs
+}
+
+# Remove this title's leftover fragments/partials once the final file is in place
+if ($code -eq 0 -and $target -and (Test-Path -LiteralPath $target)) {
+    $dir = Split-Path $target
+    $base = [IO.Path]::GetFileNameWithoutExtension($target)
+    Get-ChildItem -LiteralPath $dir -File -Force | Where-Object {
+        $_.Name.StartsWith("$base.") -and ($_.Name -match '\.f\d+\.\w+$' -or $_.Name -match '\.(part|ytdl|temp)$')
+    } | ForEach-Object { Write-Host "Cleaning up $($_.Name)"; Remove-Item -LiteralPath $_.FullName -Force }
 }
 
 if ($code -ne 0) { Write-Error "Download failed (exit $code)." }
