@@ -330,8 +330,237 @@ MOCK
     assert_file_absent "$CRON_FILE"
 )
 
+test_pip_never_bulk_upgrades() (
+    source "$UPDATER_SCRIPT"
+
+    local fixture_dir="${TEST_ROOT}/pip-tooling"
+    local mock_bin="${fixture_dir}/mock-bin"
+    local calls_file="${fixture_dir}/calls"
+    mkdir -p "$mock_bin"
+    LOG_FILE="${fixture_dir}/updater.log"
+    : > "$LOG_FILE"
+
+    cat > "${mock_bin}/python3" <<'MOCK'
+#!/bin/bash
+printf 'python3 %s\n' "$*" >> "$CALLS_FILE"
+case "$1" in
+    -c)
+        [ "${PIP_EXT_MANAGED:-0}" -eq 1 ]
+        exit $?
+        ;;
+    -m)
+        if [ "$3" = "install" ]; then
+            exit "${PIP_RC:-0}"
+        fi
+        exit 0
+        ;;
+esac
+MOCK
+    cat > "${mock_bin}/pipx" <<'MOCK'
+#!/bin/bash
+printf 'pipx %s\n' "$*" >> "$CALLS_FILE"
+exit "${PIPX_RC:-0}"
+MOCK
+    cat > "${mock_bin}/uv" <<'MOCK'
+#!/bin/bash
+printf 'uv %s\n' "$*" >> "$CALLS_FILE"
+exit "${UV_RC:-0}"
+MOCK
+    chmod 755 "${mock_bin}/python3" "${mock_bin}/pipx" "${mock_bin}/uv"
+
+    PATH="${mock_bin}:${PATH}"
+    CALLS_FILE="$calls_file"
+    export PATH CALLS_FILE
+    SUDO_USER=""
+
+    AVAILABLE_TOOLS="pipx uv"
+    tool_available() { [[ " $AVAILABLE_TOOLS " == *" $1 "* ]]; }
+
+    run_pip() {
+        : > "$calls_file"
+        PIP_STATUS="Skipped"
+        PHASE_MESSAGES=()
+        update_pip > "${fixture_dir}/run.out" || true
+    }
+
+    # PEP 668 system Python: no pip install at all, pipx handles tools.
+    PIP_EXT_MANAGED=1 PIP_RC=0 PIPX_RC=0 run_pip
+    assert_eq "Success" "$PIP_STATUS" "Externally-managed Python with healthy pipx"
+    assert_not_contains "$calls_file" "install"
+    assert_contains "$calls_file" "pipx upgrade-all"
+
+    # Writable Python: only pip itself is upgraded, never a bulk list/upgrade.
+    PIP_EXT_MANAGED=0 PIP_RC=0 PIPX_RC=0 run_pip
+    assert_eq "Success" "$PIP_STATUS" "Writable Python self-upgrade status"
+    assert_contains "$calls_file" "python3 -m pip install --upgrade pip"
+    assert_not_contains "$calls_file" "--break-system-packages"
+    assert_not_contains "$calls_file" "outdated"
+
+    # A failed pip self-upgrade must surface even though the output is piped through tee.
+    PIP_EXT_MANAGED=0 PIP_RC=1 PIPX_RC=0 run_pip
+    assert_eq "Error" "$PIP_STATUS" "pip self-upgrade failure must not be masked by tee"
+    assert_contains "$LOG_FILE" "pip self-upgrade failed with exit code 1"
+
+    # A failed pipx upgrade is a warning and keeps the pip result.
+    PIP_EXT_MANAGED=1 PIPX_RC=3 run_pip
+    assert_eq "Warning" "$PIP_STATUS" "pipx failure status"
+
+    # Without pipx, uv is used.
+    AVAILABLE_TOOLS="uv"
+    PIP_EXT_MANAGED=1 UV_RC=0 run_pip
+    assert_eq "Success" "$PIP_STATUS" "uv fallback status"
+    assert_contains "$calls_file" "uv tool upgrade --all"
+    assert_not_contains "$calls_file" "pipx"
+
+    # Without pipx or uv, nothing is bulk-upgraded.
+    AVAILABLE_TOOLS=""
+    PIP_EXT_MANAGED=1 run_pip
+    assert_not_contains "$calls_file" "install"
+    assert_not_contains "$calls_file" "uv"
+)
+
+test_run_with_timeout_terminates_commands() (
+    source "$UPDATER_SCRIPT"
+
+    local fixture_dir="${TEST_ROOT}/timeout"
+    mkdir -p "$fixture_dir"
+    LOG_FILE="${fixture_dir}/updater.log"
+    : > "$LOG_FILE"
+    PACKAGE_UPDATE_KILL_AFTER=1
+
+    local rc=0
+    run_with_timeout 5 true || rc=$?
+    assert_eq "0" "$rc" "Successful command exit code passes through"
+
+    rc=0
+    run_with_timeout 5 bash -c 'exit 7' || rc=$?
+    assert_eq "7" "$rc" "Failing command exit code passes through"
+
+    local started=$SECONDS
+    rc=0
+    run_with_timeout 1 sleep 30 || rc=$?
+    is_timeout_rc "$rc" || fail "Expected sleeper to time out (rc=${rc})"
+    [ $((SECONDS - started)) -lt 10 ] || fail "Timeout did not terminate the sleeper promptly"
+
+    started=$SECONDS
+    rc=0
+    run_with_timeout 1 bash -c 'trap "" TERM; while :; do sleep 1; done' || rc=$?
+    is_timeout_rc "$rc" || fail "Expected TERM-ignoring command to be killed (rc=${rc})"
+    [ $((SECONDS - started)) -lt 15 ] || fail "Kill-after did not terminate the TERM-ignoring command"
+
+    PACKAGE_UPDATE_TIMEOUT=1
+    APT_STATUS="Skipped"
+    PHASE_MESSAGES=()
+    fail_phase APT_STATUS 124 Warning "apt upgrade"
+    assert_eq "Error" "$APT_STATUS" "A timeout escalates the phase to Error"
+    assert_contains "$LOG_FILE" "apt upgrade timed out after 1s"
+
+    SNAP_STATUS="Skipped"
+    fail_phase SNAP_STATUS 1 Warning "snap refresh"
+    assert_eq "Warning" "$SNAP_STATUS" "An ordinary failure keeps the default status"
+
+    fail_phase SNAP_STATUS 1 Warning "snap refresh again"
+    SNAP_STATUS="Error"
+    raise_status SNAP_STATUS Warning
+    assert_eq "Error" "$SNAP_STATUS" "raise_status never downgrades"
+)
+
+test_update_lock_prevents_second_instance() (
+    source "$UPDATER_SCRIPT"
+
+    command -v flock >/dev/null 2>&1 || { printf 'SKIP: flock not installed\n'; return 0; }
+
+    local fixture_dir="${TEST_ROOT}/lock"
+    mkdir -p "$fixture_dir"
+    LOG_FILE="${fixture_dir}/updater.log"
+    : > "$LOG_FILE"
+    UPDATE_LOCK_FILE="${fixture_dir}/updater.lock"
+
+    acquire_update_lock || fail "First instance should acquire the lock"
+
+    local rc=0
+    ( acquire_update_lock ) > /dev/null || rc=$?
+    assert_eq "2" "$rc" "Second instance must be refused while the lock is held"
+    assert_contains "$LOG_FILE" "Another package update is already running"
+
+    exec 9>&-
+    rc=0
+    ( acquire_update_lock ) > /dev/null || rc=$?
+    assert_eq "0" "$rc" "Lock is available again once released"
+)
+
+test_last_run_json() (
+    source "$UPDATER_SCRIPT"
+
+    local fixture_dir="${TEST_ROOT}/last-run"
+    mkdir -p "$fixture_dir"
+    LOG_FILE="${fixture_dir}/update.log"
+    LAST_RUN_FILE="${fixture_dir}/Update-AllPackages_Linux_host_last-run.json"
+    MACHINE_NAME="host"
+    STARTED_AT_UTC="2026-10-03T09:00:00Z"
+
+    reset_statuses() {
+        APT_STATUS="Success"
+        SNAP_STATUS="Skipped"
+        FLATPAK_STATUS="Skipped"
+        NPM_STATUS="Success"
+        CLAUDE_CODE_STATUS="Success"
+        PIP_STATUS="Success"
+        RUSTUP_STATUS="Success"
+        PHASE_MESSAGES=()
+    }
+
+    reset_statuses
+    write_last_run_json
+    assert_eq "clean" "$OUTCOME" "All-success outcome"
+    assert_eq "0" "$EXIT_CODE" "All-success exit code"
+
+    reset_statuses
+    NPM_STATUS="Warning"
+    write_last_run_json
+    assert_eq "warning" "$OUTCOME" "Warning outcome"
+    assert_eq "2" "$EXIT_CODE" "Warning exit code"
+
+    reset_statuses
+    NPM_STATUS="Warning"
+    PIP_STATUS="Error"
+    PHASE_MESSAGES[PIP_STATUS]=$'pip "quoted" \\ back\tslash\nnewline'
+    write_last_run_json
+    assert_eq "error" "$OUTCOME" "Error outcome wins over warning"
+    assert_eq "1" "$EXIT_CODE" "Error exit code"
+    assert_file_exists "$LAST_RUN_FILE"
+    assert_file_absent "${LAST_RUN_FILE}.tmp.$$"
+
+    command -v python3 >/dev/null 2>&1 || { printf 'SKIP: python3 unavailable for JSON validation\n'; return 0; }
+
+    python3 - "$LAST_RUN_FILE" <<'PY' || fail "last-run JSON failed validation"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["schemaVersion"] == 1
+assert d["script"] == "Update-AllPackages_Linux"
+assert d["machine"] == "host"
+assert d["startedAtUtc"] == "2026-10-03T09:00:00Z"
+assert d["updatesCompletedAtUtc"].endswith("Z")
+assert d["exitCode"] == 1 and d["outcome"] == "error"
+assert d["logFile"].endswith("update.log")
+assert d["source"]["path"].endswith("Update-AllPackages_Linux.sh")
+assert len(d["source"]["sha256"]) == 64
+assert list(d["phases"]) == ["Apt", "Snap", "Flatpak", "Npm", "ClaudeCode", "Pip", "Rustup"]
+assert d["phases"]["Npm"]["status"] == "Warning"
+assert d["phases"]["Snap"]["status"] == "Skipped"
+assert d["phases"]["Pip"]["status"] == "Error"
+assert d["phases"]["Pip"]["message"] == 'pip "quoted" \\ back\tslash\nnewline', d["phases"]["Pip"]["message"]
+PY
+)
+
 assert_contains "$UPDATER_SCRIPT" 'if [ "${BASH_SOURCE[0]}" = "$0" ]; then'
 assert_contains "$SETUP_SCRIPT" 'if [ "${BASH_SOURCE[0]}" = "$0" ]; then'
+# Regression guards: global pip packages must never be bulk-upgraded, and
+# overlapping runs / hangs must stay guarded.
+assert_not_contains "$UPDATER_SCRIPT" '--break-system-packages'
+assert_not_contains "$UPDATER_SCRIPT" 'list --outdated'
+assert_contains "$UPDATER_SCRIPT" 'acquire_update_lock || lock_rc=$?'
+assert_contains "$UPDATER_SCRIPT" 'timeout --kill-after='
 # Regression guard: Claude Code must be resolved against the invoking user
 # (SUDO_USER), never defaulted straight to $HOME, since this script runs
 # self-elevated to root and root's $HOME is /root.
@@ -348,3 +577,11 @@ test_host_scoped_log_retention
 printf 'PASS: host-scoped log retention\n'
 test_cron_rendering
 printf 'PASS: cron rendering and legacy cleanup\n'
+test_pip_never_bulk_upgrades
+printf 'PASS: pip tooling never bulk-upgrades and propagates exit codes\n'
+test_run_with_timeout_terminates_commands
+printf 'PASS: run_with_timeout terminates hung commands\n'
+test_update_lock_prevents_second_instance
+printf 'PASS: update lock prevents overlapping runs\n'
+test_last_run_json
+printf 'PASS: last-run JSON is valid\n'
