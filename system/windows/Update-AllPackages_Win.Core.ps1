@@ -421,3 +421,78 @@ function Write-AtomicJsonFile {
 
     return $FullPath
 }
+
+function ConvertTo-WindowsCommandLineArgument {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Argument
+    )
+
+    if ($Argument.Length -ne 0 -and $Argument -notmatch '[\s"]') { return $Argument }
+    $Escaped = [regex]::Replace($Argument, '(\x5c*)"', '$1$1\"')
+    $Escaped = [regex]::Replace($Escaped, '(\x5c+)$', '$1$1')
+    return '"' + $Escaped + '"'
+}
+
+function Invoke-ExternalWithTimeout {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [string[]]$Arguments = @(),
+        [ValidateRange(1, 86400)]
+        [int]$TimeoutSeconds = 300,
+        [string]$WorkingDirectory
+    )
+
+    $LaunchPath = $FilePath
+    $LaunchArguments = @($Arguments)
+    if ([System.IO.Path]::GetExtension($FilePath) -ieq ".ps1") {
+        $LaunchPath = (Get-Process -Id $PID).Path
+        $LaunchArguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $FilePath) + @($Arguments)
+    }
+
+    $StartInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $StartInfo.FileName = $LaunchPath
+    $StartInfo.Arguments = (@($LaunchArguments | ForEach-Object { ConvertTo-WindowsCommandLineArgument -Argument "$_" }) -join " ")
+    $StartInfo.UseShellExecute = $false
+    $StartInfo.CreateNoWindow = $true
+    $StartInfo.RedirectStandardInput = $true
+    $StartInfo.RedirectStandardOutput = $true
+    $StartInfo.RedirectStandardError = $true
+    $StartInfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $StartInfo.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+    if ($WorkingDirectory) { $StartInfo.WorkingDirectory = $WorkingDirectory }
+
+    $Process = New-Object System.Diagnostics.Process
+    $Process.StartInfo = $StartInfo
+    try {
+        [void]$Process.Start()
+        $Process.StandardInput.Close()
+        $OutputTask = $Process.StandardOutput.ReadToEndAsync()
+        $ErrorTask = $Process.StandardError.ReadToEndAsync()
+
+        $TimedOut = -not $Process.WaitForExit($TimeoutSeconds * 1000)
+        if ($TimedOut) {
+            # Kill the whole tree: package managers spawn installers that would otherwise keep the pipes open.
+            try { $null = & taskkill.exe /PID $Process.Id /T /F 2>&1 } catch {}
+            try { if (-not $Process.HasExited) { $Process.Kill() } } catch {}
+            [void]$Process.WaitForExit(10000)
+        }
+        else {
+            $Process.WaitForExit()
+        }
+        [void][System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($OutputTask, $ErrorTask), 10000)
+
+        return [pscustomobject]@{
+            Output         = if ($OutputTask.IsCompleted) { $OutputTask.Result } else { "" }
+            Error          = if ($ErrorTask.IsCompleted) { $ErrorTask.Result } else { "" }
+            ExitCode       = if ($TimedOut) { -1 } else { $Process.ExitCode }
+            TimedOut       = $TimedOut
+            TimeoutSeconds = $TimeoutSeconds
+        }
+    }
+    finally {
+        $Process.Dispose()
+    }
+}

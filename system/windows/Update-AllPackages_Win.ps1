@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    Weekly package update script for winget, Windows Store, Chocolatey, npm, WSL apt/Claude Code, and pip.
+    Weekly package update script for winget, Windows Store, Chocolatey, npm, WSL apt/Claude Code, and pip/pipx/uv tools.
 .DESCRIPTION
     Updates all packages from winget, Windows Store, Chocolatey,
-    npm global packages, WSL Ubuntu (apt and the native Claude Code installer), and pip global packages.
+    npm global packages, WSL Ubuntu (apt and the native Claude Code installer), pip itself, and pipx (or uv) managed tools.
     Logs all output to a timestamped file and shows toast notifications.
 .NOTES
     Author: Auto-generated
@@ -21,7 +21,11 @@ param(
     [switch]$Elevated,
     [switch]$UserWingetOnly,
     [switch]$NoPause,
-    [int]$KeepOpenMinutes = 0
+    [int]$KeepOpenMinutes = 0,
+    [ValidateRange(1, 1440)]
+    [int]$UpgradeTimeoutMinutes = 30,
+    [ValidateRange(1, 240)]
+    [int]$QueryTimeoutMinutes = 5
 )
 
 $CoreScriptPath = Join-Path $PSScriptRoot "Update-AllPackages_Win.Core.ps1"
@@ -59,6 +63,7 @@ $LogFile = Join-Path $LogDir "${LogScriptName}_${MachineName}_$Timestamp.log"
 $LastRunStatusFile = Join-Path $LogDir "${StatusScriptName}_${MachineName}_last-run.json"
 
 # Track results for summary
+$script:TimedOutPhases = @{}
 $Results = @{
     Execution       = @{ Status = "Skipped"; Message = "" }
     Winget          = @{ Status = "Skipped"; Message = "" }
@@ -71,6 +76,8 @@ $Results = @{
     Pip             = @{ Status = "Skipped"; Message = "" }
 }
 $FinalExitCode = 0
+$UpgradeTimeoutSeconds = $UpgradeTimeoutMinutes * 60
+$QueryTimeoutSeconds = $QueryTimeoutMinutes * 60
 $UpdateMutexName = "Global\Stuff.UpdateAllPackages.Win"
 $WingetLockPath = Join-Path $LogDir "Update-AllPackages_Win_Winget.lock"
 $SabnzbdRestartMarkerPrefix = "Update-AllPackages_Win_RestartSABnzbd_"
@@ -114,6 +121,30 @@ function Write-Log {
         }
         catch {}
     }
+}
+
+function Write-ExternalResultLog {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Result,
+        [switch]$ErrorAsWarning
+    )
+
+    # Drop winget/choco progress-bar redraws and spinner frames; keep real messages.
+    $NoisePattern = '^[\s\u2588\u2593\u2592\u2591\-\x5c|/]*([\d.]+\s?[KMG]?B\s*/\s*[\d.]+\s?[KMG]?B|\d+%)?\s*$'
+    $LineSplit = '\r\n|\n|\r'
+    foreach ($Line in @(($Result.Output -replace "`0", "") -split $LineSplit)) {
+        if ($Line -and $Line -notmatch $NoisePattern) { Write-Log $Line -Level Info }
+    }
+    $ErrorLevel = if ($ErrorAsWarning) { "Warning" } else { "Info" }
+    foreach ($Line in @(($Result.Error -replace "`0", "") -split $LineSplit)) {
+        if ($Line -and $Line -notmatch $NoisePattern) { Write-Log $Line -Level $ErrorLevel }
+    }
+}
+
+function Get-TimeoutDescription {
+    param([Parameter(Mandatory = $true)]$Result)
+    return "{0} minute(s)" -f [math]::Round($Result.TimeoutSeconds / 60, 1)
 }
 
 function Test-DataSaver {
@@ -246,13 +277,20 @@ function Get-WingetUpgradeIds {
     )
 
     Write-Log "Checking for remaining $Source upgrades..." -Level Info
-    $Output = & $WingetPath.Source upgrade --source $Source --include-unknown --accept-source-agreements 2>&1
-    $QueryExitCode = $LASTEXITCODE
+    $QueryResult = Invoke-ExternalWithTimeout -FilePath $WingetPath.Source -TimeoutSeconds $QueryTimeoutSeconds -Arguments @(
+        "upgrade", "--source", $Source, "--include-unknown", "--accept-source-agreements"
+    )
+    $QueryExitCode = $QueryResult.ExitCode
+    $Output = @((($QueryResult.Output, $QueryResult.Error) -join "`n") -split '\r\n|\n|\r')
 
     foreach ($Line in $Output) {
         $Text = "$Line".Trim()
         if ([string]::IsNullOrWhiteSpace($Text)) { continue }
         Write-Log $Text -Level Info
+    }
+
+    if ($QueryResult.TimedOut) {
+        throw "winget upgrade discovery for source '$Source' timed out after $(Get-TimeoutDescription -Result $QueryResult)"
     }
 
     if ($QueryExitCode -ne $null -and (Test-WingetNoApplicableExitCode -ExitCode $QueryExitCode)) {
@@ -510,8 +548,16 @@ function Invoke-WingetExplicitUpgrades {
         }
 
         Write-Log "Running: winget upgrade --id $PackageId -e --source $Source --include-unknown --accept-package-agreements --accept-source-agreements" -Level Info
-        & $WingetPath.Source upgrade --id $PackageId -e --source $Source --include-unknown --accept-package-agreements --accept-source-agreements
-        $WingetExitCode = $LASTEXITCODE
+        $UpgradeResult = Invoke-ExternalWithTimeout -FilePath $WingetPath.Source -TimeoutSeconds $UpgradeTimeoutSeconds -Arguments @(
+            "upgrade", "--id", $PackageId, "-e", "--source", $Source, "--include-unknown",
+            "--accept-package-agreements", "--accept-source-agreements"
+        )
+        Write-ExternalResultLog -Result $UpgradeResult
+        $WingetExitCode = $UpgradeResult.ExitCode
+        if ($UpgradeResult.TimedOut) {
+            Write-Log "winget upgrade for $PackageId timed out after $(Get-TimeoutDescription -Result $UpgradeResult) and was terminated." -Level Error
+            $script:TimedOutPhases["Winget"] = $true
+        }
 
         $ServiceRestoreFailure = $null
         try {
@@ -869,10 +915,19 @@ function Update-Winget {
             # Pin packages with broken version detection so they don't re-upgrade every run
             $WingetPins = @("Syncthing.Syncthing", "BillStewart.SyncthingWindowsSetup")
             foreach ($Pin in $WingetPins) {
-                $PinExists = & $WingetPath.Source pin list | Select-String -Quiet -SimpleMatch $Pin
-                if (-not $PinExists) {
+                $PinList = Invoke-ExternalWithTimeout -FilePath $WingetPath.Source -TimeoutSeconds $QueryTimeoutSeconds -Arguments @("pin", "list")
+                if ($PinList.TimedOut) {
+                    Write-Log "winget pin list timed out after $(Get-TimeoutDescription -Result $PinList); skipping pin maintenance for $Pin." -Level Warning
+                    continue
+                }
+                if ($PinList.Output -notlike "*$Pin*") {
                     Write-Log "Pinning $Pin (broken version detection)" -Level Info
-                    & $WingetPath.Source pin add --id $Pin -e --blocking 2>&1 | Out-Null
+                    $PinAdd = Invoke-ExternalWithTimeout -FilePath $WingetPath.Source -TimeoutSeconds $QueryTimeoutSeconds -Arguments @(
+                        "pin", "add", "--id", $Pin, "-e", "--blocking"
+                    )
+                    if ($PinAdd.TimedOut) {
+                        Write-Log "winget pin add for $Pin timed out after $(Get-TimeoutDescription -Result $PinAdd)." -Level Warning
+                    }
                 }
             }
 
@@ -931,7 +986,7 @@ function Update-Winget {
             }
         }
         else {
-            $script:Results.Winget.Status = "Warning"
+            $script:Results.Winget.Status = if ($script:TimedOutPhases["Winget"]) { "Error" } else { "Warning" }
             if ($Failed.Count -gt 0) {
                 $script:Results.Winget.Message = "Winget completed with issues; packages requiring attention: $($Failed -join ', ')"
             }
@@ -1246,8 +1301,15 @@ function Update-WindowsStore {
 
         Write-Log "Running: winget upgrade --all --source msstore --include-unknown --accept-package-agreements --accept-source-agreements" -Level Info
 
-        & $WingetPath.Source upgrade --all --source msstore --include-unknown --accept-package-agreements --accept-source-agreements
-        $BulkExitCode = $LASTEXITCODE
+        $BulkResult = Invoke-ExternalWithTimeout -FilePath $WingetPath.Source -TimeoutSeconds $UpgradeTimeoutSeconds -Arguments @(
+            "upgrade", "--all", "--source", "msstore", "--include-unknown",
+            "--accept-package-agreements", "--accept-source-agreements"
+        )
+        Write-ExternalResultLog -Result $BulkResult
+        if ($BulkResult.TimedOut) {
+            throw "winget upgrade --all for msstore timed out after $(Get-TimeoutDescription -Result $BulkResult) and was terminated"
+        }
+        $BulkExitCode = $BulkResult.ExitCode
         $BulkNoLongerApplicable = ($BulkExitCode -ne $null -and (Test-WingetNoApplicableExitCode -ExitCode $BulkExitCode))
         $BulkSucceeded = ($BulkExitCode -eq 0 -or $BulkExitCode -eq $null -or $BulkNoLongerApplicable)
 
@@ -1310,8 +1372,12 @@ function Update-Chocolatey {
 
         if ($IsAdmin) {
             Write-Log "Running choco upgrade..." -Level Info
-            & $ChocoPath.Source upgrade all -y
-            $ChocolateyExitCode = $LASTEXITCODE
+            $ChocoResult = Invoke-ExternalWithTimeout -FilePath $ChocoPath.Source -TimeoutSeconds $UpgradeTimeoutSeconds -Arguments @("upgrade", "all", "-y")
+            Write-ExternalResultLog -Result $ChocoResult
+            if ($ChocoResult.TimedOut) {
+                throw "Chocolatey upgrade timed out after $(Get-TimeoutDescription -Result $ChocoResult) and was terminated"
+            }
+            $ChocolateyExitCode = $ChocoResult.ExitCode
             if ($ChocolateyExitCode -eq 0 -or $ChocolateyExitCode -eq $null) {
                 $script:Results.ChocolateyAdmin.Status = "Success"
                 $script:Results.ChocolateyAdmin.Message = "Chocolatey packages updated successfully"
@@ -1378,13 +1444,14 @@ function Update-WslPackages {
 
         # Windows elevation does not grant Linux sudo rights inside WSL.
         # Run the apt workflow as the WSL root user so scheduled runs are non-interactive.
-        $WslOutput = & wsl.exe -d Ubuntu -u root -- bash -lc $WslAptCommand 2>&1
-        $WslExitCode = $LASTEXITCODE
-        foreach ($Line in $WslOutput) {
-            if ($Line) {
-                Write-Log "$Line" -Level Info
-            }
+        $WslResult = Invoke-ExternalWithTimeout -FilePath $WslPath.Source -TimeoutSeconds $UpgradeTimeoutSeconds -Arguments @(
+            "-d", "Ubuntu", "-u", "root", "--", "bash", "-lc", $WslAptCommand
+        )
+        Write-ExternalResultLog -Result $WslResult
+        if ($WslResult.TimedOut) {
+            throw "WSL apt timed out after $(Get-TimeoutDescription -Result $WslResult) and was terminated"
         }
+        $WslExitCode = $WslResult.ExitCode
 
         if ($WslExitCode -eq 0 -or $WslExitCode -eq $null) {
             $script:Results.Wsl.Status = "Success"
@@ -1437,13 +1504,14 @@ function Update-WslClaudeCode {
         Write-Log "Current WSL Claude Code: $CurrentVersion" -Level Info
 
         Write-Log "Running as WSL default user: claude update" -Level Info
-        $UpdateOutput = & wsl.exe -d Ubuntu -- bash -lc "claude update" 2>&1
-        $UpdateExitCode = $LASTEXITCODE
-        foreach ($Line in $UpdateOutput) {
-            if ($Line) {
-                Write-Log "$Line" -Level Info
-            }
+        $UpdateResult = Invoke-ExternalWithTimeout -FilePath $WslPath.Source -TimeoutSeconds $UpgradeTimeoutSeconds -Arguments @(
+            "-d", "Ubuntu", "--", "bash", "-lc", "claude update"
+        )
+        Write-ExternalResultLog -Result $UpdateResult
+        if ($UpdateResult.TimedOut) {
+            throw "WSL claude update timed out after $(Get-TimeoutDescription -Result $UpdateResult) and was terminated"
         }
+        $UpdateExitCode = $UpdateResult.ExitCode
 
         if ($UpdateExitCode -ne 0 -and $null -ne $UpdateExitCode) {
             $script:Results.WslClaude.Status = "Warning"
@@ -1474,84 +1542,70 @@ function Update-WslClaudeCode {
 
 function Update-Pip {
     Write-Log ("=" * 60) -Level Info
-    Write-Log "STARTING PIP UPDATES" -Level Info
+    Write-Log "STARTING PIP / PIPX / UV TOOL UPDATES" -Level Info
     Write-Log ("=" * 60) -Level Info
 
     try {
         $PipPath = Get-Command pip -ErrorAction Stop
         Write-Log "Found pip at: $($PipPath.Source)" -Level Info
 
-        # Upgrade pip itself first
         # pip.exe cannot replace itself on Windows; pip requires `python -m pip` for self-upgrade
         $PythonPath = Join-Path (Split-Path $PipPath.Source -Parent | Split-Path -Parent) "python.exe"
         if (-not (Test-Path -LiteralPath $PythonPath)) {
             $PythonPath = (Get-Command python -ErrorAction Stop).Source
         }
         Write-Log "Upgrading pip itself via: $PythonPath -m pip" -Level Info
-        $PipUpgradeOutput = & $PythonPath -m pip install --upgrade pip 2>&1
-        $PipUpgradeExitCode = $LASTEXITCODE
-        $PipUpgradeOutput | ForEach-Object { Write-Log "$_" -Level Info }
-        if ($PipUpgradeExitCode -ne 0 -and $PipUpgradeExitCode -ne $null) {
-            throw "pip self-update completed with exit code: $PipUpgradeExitCode"
+        $PipUpgradeResult = Invoke-ExternalWithTimeout -FilePath $PythonPath -TimeoutSeconds $UpgradeTimeoutSeconds -Arguments @(
+            "-m", "pip", "install", "--upgrade", "pip"
+        )
+        Write-ExternalResultLog -Result $PipUpgradeResult
+        if ($PipUpgradeResult.TimedOut) {
+            throw "pip self-update timed out after $(Get-TimeoutDescription -Result $PipUpgradeResult) and was terminated"
+        }
+        if ($PipUpgradeResult.ExitCode -ne 0 -and $PipUpgradeResult.ExitCode -ne $null) {
+            throw "pip self-update completed with exit code: $($PipUpgradeResult.ExitCode)"
         }
 
-        # Get outdated packages as JSON
-        Write-Log "Checking for outdated packages..." -Level Info
-        $OutdatedJson = & $PipPath.Source list --outdated --format=json 2>&1
-        $PipListExitCode = $LASTEXITCODE
-        if ($PipListExitCode -ne 0 -and $PipListExitCode -ne $null) {
-            throw "pip outdated check completed with exit code: $PipListExitCode"
+        # Global site-packages are not bulk-upgraded: that breaks dependency pins.
+        # Standalone tools live in isolated environments managed by pipx (preferred) or uv.
+        $ToolManager = $null
+        $ToolArguments = @()
+        $PipxCommand = Get-Command pipx -ErrorAction SilentlyContinue
+        $UvCommand = Get-Command uv -ErrorAction SilentlyContinue
+        if ($PipxCommand) {
+            $ToolManager = "pipx"
+            $ToolPath = $PipxCommand.Source
+            $ToolArguments = @("upgrade-all")
+        }
+        elseif ($UvCommand) {
+            $ToolManager = "uv"
+            $ToolPath = $UvCommand.Source
+            $ToolArguments = @("tool", "upgrade", "--all")
         }
 
-        $OutdatedJsonText = ($OutdatedJson | Out-String).Trim()
-        if ([string]::IsNullOrWhiteSpace($OutdatedJsonText)) {
-            throw "pip outdated check returned no JSON output"
+        if (-not $ToolManager) {
+            $script:Results.Pip.Status = "Success"
+            $script:Results.Pip.Message = "pip is current; neither pipx nor uv is installed, so no tool upgrades were attempted"
+            Write-Log $script:Results.Pip.Message -Level Info
+            return
         }
 
-        try {
-            $Outdated = @($OutdatedJsonText | ConvertFrom-Json)
+        Write-Log "Running: $ToolManager $($ToolArguments -join ' ')" -Level Info
+        $ToolResult = Invoke-ExternalWithTimeout -FilePath $ToolPath -Arguments $ToolArguments -TimeoutSeconds $UpgradeTimeoutSeconds
+        Write-ExternalResultLog -Result $ToolResult -ErrorAsWarning
+        if ($ToolResult.TimedOut) {
+            throw "$ToolManager upgrade timed out after $(Get-TimeoutDescription -Result $ToolResult) and was terminated"
         }
-        catch {
-            throw "Could not parse pip outdated output: $($_.Exception.Message)"
-        }
 
-        if ($Outdated.Count -gt 0) {
-            $PackageNames = $Outdated | ForEach-Object { $_.name }
-            $PackageList = $PackageNames -join ", "
-            Write-Log "Found $($Outdated.Count) outdated packages: $PackageList" -Level Info
-
-            # Upgrade one at a time to avoid dependency conflicts —
-            # packages with upper-bound constraints (e.g. pylint->astroid,
-            # torch->setuptools) will fail individually instead of breaking the batch
-            $Succeeded = 0
-            $Failed = @()
-            foreach ($Pkg in $PackageNames) {
-                & $PipPath.Source install --upgrade $Pkg 2>&1 | Out-Null
-                if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) {
-                    Write-Log "  Failed to upgrade $Pkg (dependency conflict)" -Level Warning
-                    $Failed += $Pkg
-                }
-                else {
-                    Write-Log "  Upgraded $Pkg" -Level Success
-                    $Succeeded++
-                }
-            }
-
-            if ($Failed.Count -gt 0) {
-                $script:Results.Pip.Status = "Warning"
-                $script:Results.Pip.Message = "$Succeeded upgraded, $($Failed.Count) skipped (dependency conflicts): $($Failed -join ', ')"
-                Write-Log "pip: $Succeeded upgraded, $($Failed.Count) skipped due to dependency conflicts" -Level Warning
-            }
-            else {
-                $script:Results.Pip.Status = "Success"
-                $script:Results.Pip.Message = "pip packages updated successfully ($Succeeded upgraded)"
-                Write-Log "pip updates completed successfully" -Level Success
-            }
+        if ($ToolResult.ExitCode -eq 0 -or $ToolResult.ExitCode -eq $null) {
+            $script:Results.Pip.Status = "Success"
+            $script:Results.Pip.Message = "pip is current and $ToolManager tools updated successfully"
+            Write-Log $script:Results.Pip.Message -Level Success
         }
         else {
-            $script:Results.Pip.Status = "Success"
-            $script:Results.Pip.Message = "pip packages are already up-to-date"
-            Write-Log "pip packages are already up-to-date" -Level Success
+            $script:Results.Pip.Status = "Warning"
+            $script:Results.Pip.Message = "pip is current; $ToolManager upgrade completed with exit code: $($ToolResult.ExitCode)"
+            Write-Log $script:Results.Pip.Message -Level Warning
         }
     }
     catch {
@@ -1561,29 +1615,27 @@ function Update-Pip {
         Show-ToastNotification -Title "pip Update Failed" -Message $_.Exception.Message -Type Error
     }
 }
-
 function Invoke-NativeCaptured {
     param(
         [Parameter(Mandatory = $true)]
         [string]$CommandPath,
-        [string[]]$Arguments = @()
+        [string[]]$Arguments = @(),
+        [int]$TimeoutSeconds = 0
     )
 
-    $ErrorFile = New-TemporaryFile
-    try {
-        $OutputText = (& $CommandPath @Arguments 2> $ErrorFile | Out-String).Trim()
-        $ExitCode = $LASTEXITCODE
-        $RawErrorText = Get-Content -Path $ErrorFile -Raw -ErrorAction SilentlyContinue
-        $ErrorText = if ($RawErrorText) { $RawErrorText.Trim() } else { "" }
-
-        return [pscustomobject]@{
-            Output   = $OutputText
-            Error    = $ErrorText
-            ExitCode = $ExitCode
-        }
+    if ($TimeoutSeconds -le 0) { $TimeoutSeconds = $QueryTimeoutSeconds }
+    $Result = Invoke-ExternalWithTimeout -FilePath $CommandPath -Arguments $Arguments -TimeoutSeconds $TimeoutSeconds
+    $ErrorText = "$($Result.Error)".Trim()
+    if ($Result.TimedOut) {
+        $script:TimedOutPhases["Npm"] = $true
+        $ErrorText = ("Timed out after $(Get-TimeoutDescription -Result $Result) and was terminated. " + $ErrorText).Trim()
     }
-    finally {
-        Remove-Item -Path $ErrorFile -Force -ErrorAction SilentlyContinue
+
+    return [pscustomobject]@{
+        Output   = "$($Result.Output)".Trim()
+        Error    = $ErrorText
+        ExitCode = $Result.ExitCode
+        TimedOut = $Result.TimedOut
     }
 }
 
@@ -1613,7 +1665,7 @@ function Invoke-NpmInstall {
         [string[]]$Arguments
     )
 
-    $Result = Invoke-NativeCaptured -CommandPath $NpmCommand -Arguments $Arguments
+    $Result = Invoke-NativeCaptured -CommandPath $NpmCommand -Arguments $Arguments -TimeoutSeconds $UpgradeTimeoutSeconds
     Write-NpmCommandOutput -CommandResult $Result
     $CombinedOutput = (($Result.Output, $Result.Error) -join "`n").Trim()
 
@@ -1928,7 +1980,7 @@ function Update-NpmGlobal {
         }
 
         if ($Issues.Count -gt 0) {
-            $script:Results.Npm.Status = "Warning"
+            $script:Results.Npm.Status = if ($script:TimedOutPhases["Npm"]) { "Error" } else { "Warning" }
             $script:Results.Npm.Message = $Issues -join "; "
             Write-Log "npm completed with issues: $($Issues -join '; ')" -Level Warning
         }
@@ -2070,7 +2122,7 @@ if ($OldLogs) {
 
 # Show start notification
 if (-not $UserWingetOnly) {
-    Show-ToastNotification -Title "Package Updates Starting" -Message "Updating winget, Windows Store, Chocolatey, npm, WSL apt/Claude Code, and pip packages..." -Type Info
+    Show-ToastNotification -Title "Package Updates Starting" -Message "Updating winget, Windows Store, Chocolatey, npm, WSL apt/Claude Code, pip, and pipx/uv tools..." -Type Info
 }
 
 # Handle split execution (User vs Elevated)
@@ -2092,7 +2144,7 @@ if ($UserWingetOnly) {
 }
 elseif (-not $IsAdmin -and -not $Elevated) {
     # All enabled package-manager phases execute in one elevated child so that
-    # filtered runs cannot silently skip user-prefix npm, WSL, or pip work.
+    # filtered runs cannot silently skip user-prefix npm, WSL, or pip/pipx work.
     $NeedsElevation = (-not $SkipWinget) -or
         (-not $SkipWindowsStore) -or
         (-not $SkipAdminChocolatey) -or
@@ -2111,6 +2163,7 @@ elseif (-not $IsAdmin -and -not $Elevated) {
         if ($SkipPip) { $RelaunchArgs += "-SkipPip" }
         if ($NoPause) { $RelaunchArgs += "-NoPause" }
         if ($KeepOpenMinutes -gt 0) { $RelaunchArgs += @("-KeepOpenMinutes", $KeepOpenMinutes) }
+        $RelaunchArgs += @("-UpgradeTimeoutMinutes", $UpgradeTimeoutMinutes, "-QueryTimeoutMinutes", $QueryTimeoutMinutes)
 
         try {
             $ElevatedProcess = Start-Process "powershell.exe" -ArgumentList $RelaunchArgs -Verb RunAs -Wait -PassThru -ErrorAction Stop

@@ -744,6 +744,60 @@ try {
     Assert-Equal -Expected $TaskSpec.principal.userId -Actual $UserWingetTaskSpec.principal.userId -Message "Scheduled tasks did not use the same user identity."
     Assert-Equal -Expected $null -Actual $UserWingetTaskSpec.PSObject.Properties["trigger"] -Message "On-demand user-context task unexpectedly had a trigger."
 
+    # --- pip self-upgrade regression and pip tool handling ---
+    Assert-True `
+        -Condition ($UpdaterSource -notmatch '\$PipPath\.Source\s+install\s+--upgrade\s+pip') `
+        -Message "Updater runs pip.exe install --upgrade pip, which pip refuses on Windows."
+    Assert-True `
+        -Condition ($UpdaterSource -notmatch '&\s*\$PipPath\.Source') `
+        -Message "Updater invokes pip.exe directly instead of python -m pip."
+    Assert-True `
+        -Condition ($UpdaterSource.Contains('"-m", "pip", "install", "--upgrade", "pip"')) `
+        -Message "Updater did not self-upgrade pip through python -m pip."
+    $UpdatePipAst = $UpdaterAst.Find({
+            param($Node)
+            $Node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -eq "Update-Pip"
+        }, $true)
+    Assert-True -Condition ($null -ne $UpdatePipAst) -Message "Updater did not define Update-Pip."
+    $UpdatePipSource = $UpdatePipAst.Extent.Text
+    Assert-True `
+        -Condition ($UpdatePipSource -notmatch 'install[^\r\n]*--upgrade[^\r\n]*\$Pkg' -and $UpdatePipSource -notmatch '--outdated') `
+        -Message "Update-Pip still bulk-upgrades global site-packages."
+    Assert-True `
+        -Condition ($UpdatePipSource.Contains('"upgrade-all"') -and $UpdatePipSource.Contains('"tool", "upgrade", "--all"')) `
+        -Message "Update-Pip did not use pipx upgrade-all with a uv tool fallback."
+    Assert-True `
+        -Condition ($UpdatePipSource.Contains('Invoke-ExternalWithTimeout')) `
+        -Message "Update-Pip did not run external commands through the timeout wrapper."
+
+    # --- timeout wrapper ---
+    Assert-Equal -Expected 'plain' -Actual (ConvertTo-WindowsCommandLineArgument -Argument 'plain') -Message "Plain argument was quoted."
+    Assert-Equal -Expected '"a b"' -Actual (ConvertTo-WindowsCommandLineArgument -Argument 'a b') -Message "Argument with a space was not quoted."
+    Assert-Equal -Expected '"say \"hi\""' -Actual (ConvertTo-WindowsCommandLineArgument -Argument 'say "hi"') -Message "Embedded quotes were not escaped."
+    Assert-Equal -Expected '""' -Actual (ConvertTo-WindowsCommandLineArgument -Argument '') -Message "Empty argument was not quoted."
+
+    $ChildHost = (Get-Process -Id $PID).Path
+    $QuickResult = Invoke-ExternalWithTimeout -FilePath $ChildHost -TimeoutSeconds 60 -Arguments @(
+        "-NoProfile", "-Command", "Write-Output 'two words'; [Console]::Error.WriteLine('oops'); exit 3"
+    )
+    Assert-Equal -Expected $false -Actual $QuickResult.TimedOut -Message "A fast command was reported as timed out."
+    Assert-Equal -Expected 3 -Actual $QuickResult.ExitCode -Message "Wrapper did not propagate the child exit code."
+    Assert-True -Condition ($QuickResult.Output.Trim() -eq "two words") -Message "Wrapper did not capture stdout."
+    Assert-True -Condition ($QuickResult.Error.Trim() -eq "oops") -Message "Wrapper did not capture stderr."
+
+    $Stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $SleepResult = Invoke-ExternalWithTimeout -FilePath $ChildHost -TimeoutSeconds 3 -Arguments @(
+        "-NoProfile", "-Command", "[Console]::Out.WriteLine(`$PID); [Console]::Out.Flush(); Start-Sleep -Seconds 120"
+    )
+    $Stopwatch.Stop()
+    Assert-Equal -Expected $true -Actual $SleepResult.TimedOut -Message "A sleeping child was not reported as timed out."
+    Assert-Equal -Expected -1 -Actual $SleepResult.ExitCode -Message "A timed-out command did not report exit code -1."
+    Assert-True -Condition ($Stopwatch.Elapsed.TotalSeconds -lt 60) -Message "Timeout wrapper did not return promptly after the timeout."
+    $SleepChildPid = 0
+    Assert-True -Condition ([int]::TryParse($SleepResult.Output.Trim(), [ref]$SleepChildPid)) -Message "Timed-out child PID was not captured."
+    Assert-True `
+        -Condition ($null -eq (Get-Process -Id $SleepChildPid -ErrorAction SilentlyContinue)) `
+        -Message "Timeout wrapper left the sleeping child process running."
     Write-Host "Passed $TestsRun Windows updater offline assertions." -ForegroundColor Green
     exit 0
 }
