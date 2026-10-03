@@ -1482,8 +1482,13 @@ function Update-Pip {
         Write-Log "Found pip at: $($PipPath.Source)" -Level Info
 
         # Upgrade pip itself first
-        Write-Log "Upgrading pip itself..." -Level Info
-        $PipUpgradeOutput = & $PipPath.Source install --upgrade pip 2>&1
+        # pip.exe cannot replace itself on Windows; pip requires `python -m pip` for self-upgrade
+        $PythonPath = Join-Path (Split-Path $PipPath.Source -Parent | Split-Path -Parent) "python.exe"
+        if (-not (Test-Path -LiteralPath $PythonPath)) {
+            $PythonPath = (Get-Command python -ErrorAction Stop).Source
+        }
+        Write-Log "Upgrading pip itself via: $PythonPath -m pip" -Level Info
+        $PipUpgradeOutput = & $PythonPath -m pip install --upgrade pip 2>&1
         $PipUpgradeExitCode = $LASTEXITCODE
         $PipUpgradeOutput | ForEach-Object { Write-Log "$_" -Level Info }
         if ($PipUpgradeExitCode -ne 0 -and $PipUpgradeExitCode -ne $null) {
