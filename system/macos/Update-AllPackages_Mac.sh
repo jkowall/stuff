@@ -34,6 +34,11 @@ CLAUDE_CODE_BINARY="${CLAUDE_CODE_BINARY:-${HOME}/.local/bin/claude}"
 CLAUDE_DESKTOP_APP="${CLAUDE_DESKTOP_APP:-/Applications/Claude.app}"
 BREW_UPDATE_MAX_ATTEMPTS=2
 BREW_UPDATE_RETRY_DELAY_SECONDS=15
+# Per-command timeouts in seconds. 0 (or a non-number) disables the timeout.
+# UPDATE_COMMAND_TIMEOUT_SECONDS applies to every external update command; a set value also governs brew upgrade.
+BREW_UPGRADE_TIMEOUT_SECONDS="${BREW_UPGRADE_TIMEOUT_SECONDS:-${UPDATE_COMMAND_TIMEOUT_SECONDS:-7200}}"
+UPDATE_COMMAND_TIMEOUT_SECONDS="${UPDATE_COMMAND_TIMEOUT_SECONDS:-1800}"
+RUN_WITH_TIMEOUT_KILL_GRACE_SECONDS=10
 UPDATE_LOCK_FILE="/tmp/${SCRIPT_NAME}.${UID}.lock"
 NPM_GENERIC_ALLOWED_SCRIPTS="@github/keytar,node-pty"
 NPM_CHANNEL_PACKAGES=(
@@ -73,6 +78,21 @@ PIPX_STATUS="Skipped"
 RUSTUP_STATUS="Skipped"
 LOG_CLEANUP_STATUS="Skipped"
 
+# Per-phase summary text for the last-run JSON, filled by run_phase.
+BREW_MESSAGE=""
+MAS_MESSAGE=""
+MACUPDATER_MESSAGE=""
+NPM_MESSAGE=""
+CLAUDE_CODE_MESSAGE=""
+CLAUDE_DESKTOP_MESSAGE=""
+PIP_MESSAGE=""
+PIPX_MESSAGE=""
+RUSTUP_MESSAGE=""
+LOG_CLEANUP_MESSAGE=""
+LAST_NOTABLE_MESSAGE=""
+LAST_INFO_MESSAGE=""
+RUN_STARTED_UTC=""
+
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
@@ -82,6 +102,16 @@ log() {
     local message="$2"
     local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
     local log_entry="[$timestamp] [$level] $message"
+
+    case "$level" in
+        Success|Warning|Error) LAST_NOTABLE_MESSAGE="$message" ;;
+        Info)
+            case "$message" in
+                ===*) ;;
+                *) LAST_INFO_MESSAGE="$message" ;;
+            esac
+            ;;
+    esac
 
     if [ -t 1 ]; then
         local color=""
@@ -190,43 +220,102 @@ end run
 OSA
 }
 
+kill_process_tree() {
+    local signal="$1"
+    local parent_pid="$2"
+    local child_pid
+
+    for child_pid in $(pgrep -P "$parent_pid" 2>/dev/null); do
+        kill_process_tree "$signal" "$child_pid"
+    done
+    kill "-${signal}" "$parent_pid" 2>/dev/null || true
+}
+
+# Runs a command with a wall-clock limit. Output passes through untouched; exit status 124 means it timed out
+# (the timeout notice goes to stderr so callers that merge 2>&1 into tee capture it). Uses gtimeout/timeout
+# when present, otherwise a polling watchdog that kills the command and all its descendants.
+# Seconds of 0 or a non-number runs the command without a limit.
+run_with_timeout() {
+    local timeout_seconds="$1"
+    shift
+
+    if [[ ! "$timeout_seconds" =~ ^[0-9]+$ ]] || [ "$timeout_seconds" -eq 0 ]; then
+        "$@"
+        return $?
+    fi
+
+    # GNU timeout moves the command to a background process group, which breaks tty prompts (e.g. sudo in
+    # interactive mode). Use it only when there is no tty; otherwise the watchdog keeps the command in the foreground.
+    local timeout_bin=""
+    if [ "${RUN_WITH_TIMEOUT_FORCE_PORTABLE:-0}" -ne 1 ] && [ ! -t 0 ]; then
+        timeout_bin="$(command -v gtimeout || command -v timeout || true)"
+    fi
+
+    local command_status=0
+    if [ -n "$timeout_bin" ]; then
+        "$timeout_bin" "--kill-after=${RUN_WITH_TIMEOUT_KILL_GRACE_SECONDS}" "$timeout_seconds" "$@"
+        command_status=$?
+        # GNU timeout exits 137 when it had to escalate to KILL after TERM was ignored
+        if [ "$command_status" -eq 137 ]; then
+            command_status=124
+        fi
+    else
+        "$@" <&0 &
+        local command_pid=$!
+        local ticks=0
+        local limit_ticks=$((timeout_seconds * 5))
+        local timed_out=0
+
+        while kill -0 "$command_pid" 2>/dev/null; do
+            if [ "$ticks" -ge "$limit_ticks" ]; then
+                timed_out=1
+                kill_process_tree TERM "$command_pid"
+                local grace_ticks=0
+                local grace_limit=$((RUN_WITH_TIMEOUT_KILL_GRACE_SECONDS * 5))
+                while kill -0 "$command_pid" 2>/dev/null && [ "$grace_ticks" -lt "$grace_limit" ]; do
+                    sleep 0.2
+                    grace_ticks=$((grace_ticks + 1))
+                done
+                if kill -0 "$command_pid" 2>/dev/null; then
+                    kill_process_tree KILL "$command_pid"
+                fi
+                break
+            fi
+            sleep 0.2
+            ticks=$((ticks + 1))
+        done
+
+        wait "$command_pid" 2>/dev/null
+        command_status=$?
+        if [ "$timed_out" -eq 1 ]; then
+            command_status=124
+        fi
+    fi
+
+    if [ "$command_status" -eq 124 ]; then
+        printf '[%s] [Warning] Command timed out after %ss: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$timeout_seconds" "$*" >&2
+    fi
+    return "$command_status"
+}
+
 run_logged_with_timeout() {
     local timeout_seconds="$1"
     shift
 
-    local output_file
-    output_file="$(mktemp "${TMPDIR:-/tmp}/update-command-output.XXXXXX")" || {
-        log "Warning" "Unable to create temporary output file for command: $*"
-        return 125
-    }
+    run_with_timeout "$timeout_seconds" "$@" 2>&1 | tee -a "$LOG_FILE"
+    return "${PIPESTATUS[0]}"
+}
 
-    "$@" > "$output_file" 2>&1 &
-    local command_pid=$!
-    local elapsed=0
-    local wait_interval=5
+run_phase() {
+    local message_var="$1"
+    shift
 
-    while kill -0 "$command_pid" 2>/dev/null; do
-        if [ "$elapsed" -ge "$timeout_seconds" ]; then
-            log "Warning" "Command timed out after ${timeout_seconds}s: $*"
-            kill "$command_pid" 2>/dev/null || true
-            sleep 2
-            kill -9 "$command_pid" 2>/dev/null || true
-            wait "$command_pid" 2>/dev/null || true
-            cat "$output_file" | tee -a "$LOG_FILE"
-            rm -f "$output_file"
-            return 124
-        fi
-
-        sleep "$wait_interval"
-        elapsed=$((elapsed + wait_interval))
-    done
-
-    local command_status=0
-    wait "$command_pid"
-    command_status=$?
-    cat "$output_file" | tee -a "$LOG_FILE"
-    rm -f "$output_file"
-    return "$command_status"
+    LAST_NOTABLE_MESSAGE=""
+    LAST_INFO_MESSAGE=""
+    "$@"
+    local phase_status=$?
+    printf -v "$message_var" '%s' "${LAST_NOTABLE_MESSAGE:-$LAST_INFO_MESSAGE}"
+    return "$phase_status"
 }
 
 acquire_update_lock() {
@@ -268,10 +357,20 @@ update_brew() {
 
     local brew_update_succeeded=0
     local brew_update_attempt=1
+    local brew_rc=0
+    local brew_timed_out=0
     while [ "$brew_update_attempt" -le "$BREW_UPDATE_MAX_ATTEMPTS" ]; do
         log "Info" "Running: brew update (attempt ${brew_update_attempt}/${BREW_UPDATE_MAX_ATTEMPTS})"
-        if brew update 2>&1 | tee -a "$LOG_FILE"; then
+        brew_rc=0
+        run_logged_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" brew update || brew_rc=$?
+        if [ "$brew_rc" -eq 0 ]; then
             brew_update_succeeded=1
+            break
+        fi
+
+        # A hang is not a transient network error, so do not retry it.
+        if [ "$brew_rc" -eq 124 ]; then
+            brew_timed_out=1
             break
         fi
 
@@ -284,21 +383,38 @@ update_brew() {
 
     if [ "$brew_update_succeeded" -ne 1 ]; then
         BREW_STATUS="Error"
-        log "Error" "Brew update failed after ${BREW_UPDATE_MAX_ATTEMPTS} attempts."
+        if [ "$brew_timed_out" -eq 1 ]; then
+            log "Error" "Brew update timed out after ${UPDATE_COMMAND_TIMEOUT_SECONDS}s."
+        else
+            log "Error" "Brew update failed after ${BREW_UPDATE_MAX_ATTEMPTS} attempts."
+        fi
         return
     fi
 
     local brew_warning=0
 
     log "Info" "Running: brew upgrade"
-    if ! brew upgrade 2>&1 | tee -a "$LOG_FILE"; then
-        BREW_STATUS="Warning"
-        log "Warning" "Brew upgrade encountered issues."
+    brew_rc=0
+    run_logged_with_timeout "$BREW_UPGRADE_TIMEOUT_SECONDS" brew upgrade || brew_rc=$?
+    if [ "$brew_rc" -ne 0 ]; then
+        if [ "$brew_rc" -eq 124 ]; then
+            BREW_STATUS="Error"
+            log "Error" "Brew upgrade timed out after ${BREW_UPGRADE_TIMEOUT_SECONDS}s."
+        else
+            BREW_STATUS="Warning"
+            log "Warning" "Brew upgrade encountered issues."
+        fi
         return
     fi
 
     log "Info" "Running: brew cleanup"
-    if ! brew cleanup 2>&1 | tee -a "$LOG_FILE"; then
+    brew_rc=0
+    run_logged_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" brew cleanup || brew_rc=$?
+    if [ "$brew_rc" -eq 124 ]; then
+        BREW_STATUS="Error"
+        log "Error" "Brew cleanup timed out after ${UPDATE_COMMAND_TIMEOUT_SECONDS}s."
+        return
+    elif [ "$brew_rc" -ne 0 ]; then
         brew_warning=1
         log "Warning" "Brew cleanup encountered issues."
     fi
@@ -330,7 +446,13 @@ update_claude_code() {
     fi
 
     log "Info" "Running: ${CLAUDE_CODE_BINARY} update"
-    if ! "$CLAUDE_CODE_BINARY" update 2>&1 | tee -a "$LOG_FILE"; then
+    local claude_rc=0
+    run_logged_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" "$CLAUDE_CODE_BINARY" update || claude_rc=$?
+    if [ "$claude_rc" -eq 124 ]; then
+        CLAUDE_CODE_STATUS="Error"
+        log "Error" "Claude Code native update timed out after ${UPDATE_COMMAND_TIMEOUT_SECONDS}s."
+        return 1
+    elif [ "$claude_rc" -ne 0 ]; then
         CLAUDE_CODE_STATUS="Warning"
         log "Warning" "Claude Code native update encountered issues."
         return 1
@@ -351,14 +473,21 @@ update_claude_code() {
 update_or_audit_claude_desktop() {
     if command -v brew >/dev/null 2>&1 && brew list --cask claude >/dev/null 2>&1; then
         log "Info" "Running: brew upgrade --cask --greedy-auto-updates claude"
-        if brew upgrade --cask --greedy-auto-updates claude 2>&1 | tee -a "$LOG_FILE"; then
+        local desktop_rc=0
+        run_logged_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" brew upgrade --cask --greedy-auto-updates claude || desktop_rc=$?
+        if [ "$desktop_rc" -eq 0 ]; then
             CLAUDE_DESKTOP_STATUS="Success"
             log "Success" "Claude Desktop is up-to-date through Homebrew."
             return 0
         fi
 
-        CLAUDE_DESKTOP_STATUS="Warning"
-        log "Warning" "Claude Desktop Homebrew update encountered issues."
+        if [ "$desktop_rc" -eq 124 ]; then
+            CLAUDE_DESKTOP_STATUS="Error"
+            log "Error" "Claude Desktop Homebrew update timed out after ${UPDATE_COMMAND_TIMEOUT_SECONDS}s."
+        else
+            CLAUDE_DESKTOP_STATUS="Warning"
+            log "Warning" "Claude Desktop Homebrew update encountered issues."
+        fi
         return 1
     fi
 
@@ -395,9 +524,14 @@ update_mas() {
     log "Info" "============================================================"
 
     log "Info" "Running: mas upgrade"
-    if mas upgrade 2>&1 | tee -a "$LOG_FILE"; then
+    local mas_rc=0
+    run_logged_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" mas upgrade || mas_rc=$?
+    if [ "$mas_rc" -eq 0 ]; then
         MAS_STATUS="Success"
         log "Success" "App Store updates completed successfully"
+    elif [ "$mas_rc" -eq 124 ]; then
+        MAS_STATUS="Error"
+        log "Error" "mas upgrade timed out after ${UPDATE_COMMAND_TIMEOUT_SECONDS}s."
     else
         MAS_STATUS="Warning"
         log "Warning" "mas upgrade encountered issues (or no updates available)."
@@ -430,9 +564,9 @@ update_macupdater_apps() {
         return
     }
 
-    if ! "$MACUPDATER_CLIENT" list --hide-uptodate-apps --hide-mas-apps --json --quiet > "$list_file" 2>>"$LOG_FILE"; then
+    if ! run_with_timeout "$MACUPDATER_SCAN_TIMEOUT_SECONDS" "$MACUPDATER_CLIENT" list --hide-uptodate-apps --hide-mas-apps --json --quiet > "$list_file" 2>>"$LOG_FILE"; then
         MACUPDATER_STATUS="Warning"
-        log "Warning" "MacUpdater app list failed."
+        log "Warning" "MacUpdater app list failed or timed out."
         rm -f "$list_file"
         return
     fi
@@ -638,7 +772,13 @@ update_npm() {
     log "Info" "Checking for outdated NPM packages..."
     # npm outdated exits with 1 if packages are outdated
     local outdated_json=""
-    outdated_json=$(npm outdated -g --json 2>>"$LOG_FILE") || true
+    local outdated_rc=0
+    outdated_json=$(run_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" npm outdated -g --json 2>>"$LOG_FILE") || outdated_rc=$?
+    if [ "$outdated_rc" -eq 124 ]; then
+        NPM_STATUS="Error"
+        log "Error" "npm outdated timed out after ${UPDATE_COMMAND_TIMEOUT_SECONDS}s."
+        return
+    fi
 
     if ! OUTDATED=$(python3 -c '
 import json
@@ -675,15 +815,24 @@ for package, versions in data.items():
 
     local attempted=0
     local failed=0
+    local timed_out=0
+    local install_rc=0
     local package_spec
     for package_spec in "${package_args[@]}"; do
         attempted=$((attempted + 1))
         log "Info" "Updating NPM global package: $package_spec"
-        if npm install -g --strict-allow-scripts --allow-scripts="$NPM_GENERIC_ALLOWED_SCRIPTS" "$package_spec" 2>&1 | tee -a "$LOG_FILE"; then
+        install_rc=0
+        run_logged_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" npm install -g --strict-allow-scripts --allow-scripts="$NPM_GENERIC_ALLOWED_SCRIPTS" "$package_spec" || install_rc=$?
+        if [ "$install_rc" -eq 0 ]; then
             log "Success" "NPM global package updated: $package_spec"
         else
             failed=$((failed + 1))
-            log "Warning" "NPM global package update failed: $package_spec"
+            if [ "$install_rc" -eq 124 ]; then
+                timed_out=1
+                log "Error" "NPM global package update timed out after ${UPDATE_COMMAND_TIMEOUT_SECONDS}s: $package_spec"
+            else
+                log "Warning" "NPM global package update failed: $package_spec"
+            fi
         fi
     done
 
@@ -709,9 +858,16 @@ for package, versions in data.items():
         current_version="$(get_npm_installed_version "$NPM_CHANNEL_PREFIX" "$package_name")" || true
 
         local channel_version=""
-        if ! channel_version=$(npm view "$package_spec" version 2>>"$LOG_FILE"); then
+        local view_rc=0
+        channel_version=$(run_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" npm view "$package_spec" version 2>>"$LOG_FILE") || view_rc=$?
+        if [ "$view_rc" -ne 0 ]; then
             failed=$((failed + 1))
-            log "Warning" "Unable to resolve NPM release channel: $package_spec"
+            if [ "$view_rc" -eq 124 ]; then
+                timed_out=1
+                log "Error" "Resolving NPM release channel timed out after ${UPDATE_COMMAND_TIMEOUT_SECONDS}s: $package_spec"
+            else
+                log "Warning" "Unable to resolve NPM release channel: $package_spec"
+            fi
             continue
         fi
 
@@ -724,16 +880,26 @@ for package, versions in data.items():
 
         attempted=$((attempted + 1))
         log "Info" "Updating NPM channel package in ${NPM_CHANNEL_PREFIX}: $package_spec"
-        if npm install -g --prefix "$NPM_CHANNEL_PREFIX" --strict-allow-scripts "$package_spec" 2>&1 | tee -a "$LOG_FILE" \
+        install_rc=0
+        run_logged_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" npm install -g --prefix "$NPM_CHANNEL_PREFIX" --strict-allow-scripts "$package_spec" || install_rc=$?
+        if [ "$install_rc" -eq 0 ] \
             && verify_npm_channel_package "$package_name" "$channel_version" "$binary_path"; then
             log "Success" "NPM channel package updated and verified: ${package_name}@${channel_version}"
         else
             failed=$((failed + 1))
-            log "Warning" "NPM channel package update or verification failed: $package_spec"
+            if [ "$install_rc" -eq 124 ]; then
+                timed_out=1
+                log "Error" "NPM channel package update timed out after ${UPDATE_COMMAND_TIMEOUT_SECONDS}s: $package_spec"
+            else
+                log "Warning" "NPM channel package update or verification failed: $package_spec"
+            fi
         fi
     done
 
-    if [ "$failed" -gt 0 ]; then
+    if [ "$timed_out" -eq 1 ]; then
+        NPM_STATUS="Error"
+        log "Error" "NPM updates timed out; $failed failure(s)."
+    elif [ "$failed" -gt 0 ]; then
         NPM_STATUS="Warning"
         log "Warning" "NPM updates completed with $failed failure(s)."
     elif [ "$attempted" -gt 0 ]; then
@@ -761,9 +927,34 @@ update_pip() {
     PIP_STATUS="Skipped"
 }
 
+update_uv_tools() {
+    log "Info" "============================================================"
+    log "Info" "STARTING UV TOOL UPDATES"
+    log "Info" "============================================================"
+
+    log "Info" "Running: uv tool upgrade --all"
+    local uv_rc=0
+    run_logged_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" uv tool upgrade --all || uv_rc=$?
+    if [ "$uv_rc" -eq 0 ]; then
+        PIPX_STATUS="Success"
+        log "Success" "uv tool upgrades completed successfully"
+    elif [ "$uv_rc" -eq 124 ]; then
+        PIPX_STATUS="Error"
+        log "Error" "uv tool upgrade --all timed out after ${UPDATE_COMMAND_TIMEOUT_SECONDS}s."
+    else
+        PIPX_STATUS="Warning"
+        log "Warning" "uv tool upgrade --all encountered issues."
+    fi
+}
+
 update_pipx() {
     if ! command -v pipx >/dev/null 2>&1; then
-        log "Info" "pipx not installed. Skipping."
+        if command -v uv >/dev/null 2>&1; then
+            log "Info" "pipx not installed. Falling back to uv tools."
+            update_uv_tools
+            return
+        fi
+        log "Info" "pipx and uv not installed. Skipping."
         return
     fi
 
@@ -772,9 +963,14 @@ update_pipx() {
     log "Info" "============================================================"
 
     log "Info" "Running: pipx upgrade-all"
-    if pipx upgrade-all 2>&1 | tee -a "$LOG_FILE"; then
+    local pipx_rc=0
+    run_logged_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" pipx upgrade-all || pipx_rc=$?
+    if [ "$pipx_rc" -eq 0 ]; then
         PIPX_STATUS="Success"
         log "Success" "pipx upgrades completed successfully"
+    elif [ "$pipx_rc" -eq 124 ]; then
+        PIPX_STATUS="Error"
+        log "Error" "pipx upgrade-all timed out after ${UPDATE_COMMAND_TIMEOUT_SECONDS}s."
     else
         PIPX_STATUS="Warning"
         log "Warning" "pipx upgrade-all encountered issues."
@@ -794,15 +990,26 @@ update_rustup() {
     log "Info" "Checking for rustup and toolchain updates..."
     local check_output=""
     local check_status=0
-    check_output="$(rustup check 2>&1)"
+    check_output="$(run_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" rustup check 2>&1)"
     check_status=$?
     printf '%s\n' "$check_output" | tee -a "$LOG_FILE"
 
+    if [ "$check_status" -eq 124 ]; then
+        RUSTUP_STATUS="Error"
+        log "Error" "rustup check timed out after ${UPDATE_COMMAND_TIMEOUT_SECONDS}s."
+        return
+    fi
+
     if echo "$check_output" | grep -qi "update available"; then
         log "Info" "Running: rustup update"
-        if rustup update 2>&1 | tee -a "$LOG_FILE"; then
+        local rustup_rc=0
+        run_logged_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" rustup update || rustup_rc=$?
+        if [ "$rustup_rc" -eq 0 ]; then
             RUSTUP_STATUS="Success"
             log "Success" "rustup updates completed successfully"
+        elif [ "$rustup_rc" -eq 124 ]; then
+            RUSTUP_STATUS="Error"
+            log "Error" "rustup update timed out after ${UPDATE_COMMAND_TIMEOUT_SECONDS}s."
         else
             RUSTUP_STATUS="Warning"
             log "Warning" "rustup update encountered issues."
@@ -917,6 +1124,82 @@ cleanup_logs() {
     LOG_CLEANUP_STATUS="Success"
 }
 
+file_sha256() {
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    elif command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        return 1
+    fi
+}
+
+# Mirrors the Windows updater's *_last-run.json so all platforms can be checked the same way.
+write_last_run_json() {
+    local exit_code="$1"
+    local started_utc="$2"
+    local completed_utc="$3"
+    local output_path="${LOG_DIR}/${SCRIPT_NAME}_${MACHINE_NAME}_last-run.json"
+    local source_path="${SCRIPT_DIR}/${SCRIPT_NAME}.sh"
+    local source_sha256=""
+    local outcome="error"
+
+    case "$exit_code" in
+        0) outcome="clean" ;;
+        2) outcome="warning" ;;
+    esac
+    source_sha256="$(file_sha256 "$source_path" 2>/dev/null)" || source_sha256=""
+
+    if ! python3 - "$output_path" "$SCRIPT_NAME" "$MACHINE_NAME" "$started_utc" "$completed_utc" \
+        "$exit_code" "$outcome" "$LOG_FILE" "$source_path" "$source_sha256" \
+        "Brew" "$BREW_STATUS" "$BREW_MESSAGE" \
+        "Mas" "$MAS_STATUS" "$MAS_MESSAGE" \
+        "MacUpdater" "$MACUPDATER_STATUS" "$MACUPDATER_MESSAGE" \
+        "Npm" "$NPM_STATUS" "$NPM_MESSAGE" \
+        "ClaudeCode" "$CLAUDE_CODE_STATUS" "$CLAUDE_CODE_MESSAGE" \
+        "ClaudeDesktop" "$CLAUDE_DESKTOP_STATUS" "$CLAUDE_DESKTOP_MESSAGE" \
+        "Pip" "$PIP_STATUS" "$PIP_MESSAGE" \
+        "Pipx" "$PIPX_STATUS" "$PIPX_MESSAGE" \
+        "Rustup" "$RUSTUP_STATUS" "$RUSTUP_MESSAGE" \
+        "LogCleanup" "$LOG_CLEANUP_STATUS" "$LOG_CLEANUP_MESSAGE" \
+        2>>"$LOG_FILE" <<'PY'
+import json
+import os
+import sys
+
+args = sys.argv[1:]
+(path, script, machine, started, completed, exit_code, outcome, log_file,
+ source_path, source_sha256) = args[:10]
+phase_args = args[10:]
+
+document = {
+    "schemaVersion": 1,
+    "script": script,
+    "machine": machine,
+    "startedAtUtc": started,
+    "updatesCompletedAtUtc": completed,
+    "exitCode": int(exit_code),
+    "outcome": outcome,
+    "logFile": log_file,
+    "source": {"path": source_path, "sha256": source_sha256},
+    "phases": {
+        phase_args[i]: {"status": phase_args[i + 1], "message": phase_args[i + 2]}
+        for i in range(0, len(phase_args), 3)
+    },
+}
+
+temp_path = path + ".tmp"
+with open(temp_path, "w", encoding="utf-8") as f:
+    json.dump(document, f, indent=4, ensure_ascii=False)
+    f.write("\n")
+os.replace(temp_path, path)
+PY
+    then
+        log "Warning" "Unable to write last-run status file: $output_path"
+        return 1
+    fi
+}
+
 # ============================================================================
 # MAIN EXECUTION
 # ============================================================================
@@ -976,26 +1259,31 @@ if [ "$LOCK_STATUS" -ne 0 ]; then
     exit "$LOCK_STATUS"
 fi
 
+RUN_STARTED_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
 # Cleanup
-cleanup_logs
+run_phase LOG_CLEANUP_MESSAGE cleanup_logs
 
 # Show start notification
-show_notification "Package Updates" "Starting updates for Homebrew, App Store, Claude Code, MacUpdater, npm, pipx, and rustup..."
+show_notification "Package Updates" "Starting updates for Homebrew, App Store, Claude Code, MacUpdater, npm, pipx/uv, and rustup..."
 
 # Run Updates
-update_brew
-update_or_audit_claude_desktop
-update_mas
-update_macupdater_apps
-update_npm
-update_claude_code
-update_pip
-update_pipx
-update_rustup
+run_phase BREW_MESSAGE update_brew
+run_phase CLAUDE_DESKTOP_MESSAGE update_or_audit_claude_desktop
+run_phase MAS_MESSAGE update_mas
+run_phase MACUPDATER_MESSAGE update_macupdater_apps
+run_phase NPM_MESSAGE update_npm
+run_phase CLAUDE_CODE_MESSAGE update_claude_code
+run_phase PIP_MESSAGE update_pip
+run_phase PIPX_MESSAGE update_pipx
+run_phase RUSTUP_MESSAGE update_rustup
+UPDATES_COMPLETED_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # Summary
 show_summary
 FINAL_EXIT_CODE=$?
+
+write_last_run_json "$FINAL_EXIT_CODE" "$RUN_STARTED_UTC" "$UPDATES_COMPLETED_UTC" || true
 
 echo ""
 log "Info" "Update process completed."

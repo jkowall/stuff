@@ -308,6 +308,268 @@ MOCK
     assert_not_contains "$launchctl_calls" "$pending_bootstrap"
 )
 
+test_run_with_timeout() (
+    source "$UPDATER_SCRIPT"
+    RUN_WITH_TIMEOUT_KILL_GRACE_SECONDS=2
+
+    local fixture_dir="${TEST_ROOT}/timeout helper"
+    mkdir -p "$fixture_dir"
+    LOG_FILE="${fixture_dir}/updater.log"
+    : > "$LOG_FILE"
+
+    local mode=""
+    local rc=0
+    local output=""
+    local started=0
+    local elapsed=0
+    local child_pid=""
+    local waited=0
+    local pid_file="${fixture_dir}/child.pid"
+    local stderr_file="${fixture_dir}/stderr"
+
+    for mode in native portable; do
+        if [ "$mode" = "portable" ]; then
+            RUN_WITH_TIMEOUT_FORCE_PORTABLE=1
+        else
+            RUN_WITH_TIMEOUT_FORCE_PORTABLE=0
+        fi
+
+        rc=0
+        output="$(run_with_timeout 5 bash -c 'echo hello; exit 3' </dev/null)" || rc=$?
+        assert_eq "3" "$rc" "[${mode}] exit status passes through"
+        assert_eq "hello" "$output" "[${mode}] output passes through"
+
+        rc=0
+        run_with_timeout 0 bash -c 'exit 7' </dev/null || rc=$?
+        assert_eq "7" "$rc" "[${mode}] zero disables the timeout"
+        rc=0
+        run_with_timeout not-a-number bash -c 'exit 8' </dev/null || rc=$?
+        assert_eq "8" "$rc" "[${mode}] non-numeric value disables the timeout"
+
+        rm -f "$pid_file"
+        started=$SECONDS
+        rc=0
+        run_with_timeout 1 bash -c 'sleep 60 & echo $! > "$1"; wait' _ "$pid_file" </dev/null 2>"$stderr_file" || rc=$?
+        elapsed=$((SECONDS - started))
+        assert_eq "124" "$rc" "[${mode}] timed-out command returns 124"
+        [ "$elapsed" -lt 15 ] || fail "[${mode}] timeout took too long to fire (${elapsed}s)"
+        assert_contains "$stderr_file" "timed out after 1s"
+
+        child_pid="$(cat "$pid_file")"
+        waited=0
+        while kill -0 "$child_pid" 2>/dev/null && [ "$waited" -lt 25 ]; do
+            sleep 0.2
+            waited=$((waited + 1))
+        done
+        if kill -0 "$child_pid" 2>/dev/null; then
+            kill -9 "$child_pid" 2>/dev/null || true
+            fail "[${mode}] timeout left a descendant process running"
+        fi
+    done
+
+    RUN_WITH_TIMEOUT_FORCE_PORTABLE=1
+    rc=0
+    run_logged_with_timeout 1 bash -c 'echo started; sleep 30' </dev/null >/dev/null || rc=$?
+    assert_eq "124" "$rc" "Logged timeout returns 124"
+    assert_contains "$LOG_FILE" "started"
+    assert_contains "$LOG_FILE" "timed out after 1s"
+)
+
+test_phase_timeout_sets_error_status() (
+    source "$UPDATER_SCRIPT"
+
+    local fixture_dir="${TEST_ROOT}/phase timeout"
+    local mock_bin="${fixture_dir}/bin"
+    mkdir -p "$mock_bin"
+    LOG_FILE="${fixture_dir}/updater.log"
+    : > "$LOG_FILE"
+
+    cat > "${mock_bin}/mas" <<'MOCK'
+#!/bin/bash
+sleep 30
+MOCK
+    chmod 755 "${mock_bin}/mas"
+
+    PATH="${mock_bin}:${PATH}"
+    UPDATE_COMMAND_TIMEOUT_SECONDS=1
+    RUN_WITH_TIMEOUT_KILL_GRACE_SECONDS=2
+    MAS_STATUS="Skipped"
+    update_mas >/dev/null </dev/null
+
+    assert_eq "Error" "$MAS_STATUS" "Timed-out phase status"
+    assert_contains "$LOG_FILE" "mas upgrade timed out after 1s"
+)
+
+test_run_phase_messages() (
+    source "$UPDATER_SCRIPT"
+
+    local fixture_dir="${TEST_ROOT}/phase messages"
+    mkdir -p "$fixture_dir"
+    LOG_FILE="${fixture_dir}/updater.log"
+    : > "$LOG_FILE"
+
+    notable_phase() {
+        log "Info" "============================================================"
+        log "Info" "Checking things"
+        log "Success" "Everything is fine"
+        log "Info" "trailing detail"
+    }
+    quiet_phase() {
+        log "Info" "STARTING THING"
+        log "Info" "thing not installed. Skipping."
+        log "Info" "============================================================"
+    }
+
+    run_phase PHASE_RESULT notable_phase >/dev/null
+    assert_eq "Everything is fine" "$PHASE_RESULT" "Phase message prefers the last Success/Warning/Error line"
+    run_phase PHASE_RESULT quiet_phase >/dev/null
+    assert_eq "thing not installed. Skipping." "$PHASE_RESULT" "Phase message falls back to the last Info line"
+)
+
+test_last_run_json() (
+    source "$UPDATER_SCRIPT"
+
+    local fixture_dir="${TEST_ROOT}/last run"
+    mkdir -p "$fixture_dir"
+    LOG_DIR="$fixture_dir"
+    SCRIPT_DIR="$MACOS_DIR"
+    SCRIPT_NAME="Update-AllPackages_Mac"
+    MACHINE_NAME="host-a.local"
+    LOG_FILE="${fixture_dir}/updater.log"
+    : > "$LOG_FILE"
+
+    BREW_STATUS="Success"
+    BREW_MESSAGE=$'Homebrew "quoted" back\\slash\ttab caf\xc3\xa9'
+    MAS_STATUS="Skipped"
+    MAS_MESSAGE=""
+    MACUPDATER_STATUS="Success"
+    MACUPDATER_MESSAGE="MacUpdater found no non-MAS app updates."
+    NPM_STATUS="Warning"
+    NPM_MESSAGE=$'first line\nsecond line'
+    CLAUDE_CODE_STATUS="Success"
+    CLAUDE_CODE_MESSAGE="ok"
+    CLAUDE_DESKTOP_STATUS="Auto-update"
+    CLAUDE_DESKTOP_MESSAGE="ok"
+    PIP_STATUS="Skipped"
+    PIP_MESSAGE="ok"
+    PIPX_STATUS="Success"
+    PIPX_MESSAGE="ok"
+    RUSTUP_STATUS="Success"
+    RUSTUP_MESSAGE="ok"
+    LOG_CLEANUP_STATUS="Success"
+    LOG_CLEANUP_MESSAGE="ok"
+
+    local json_path="${LOG_DIR}/Update-AllPackages_Mac_host-a.local_last-run.json"
+    write_last_run_json 2 "2026-10-03T09:46:13Z" "2026-10-03T09:46:39Z"
+
+    assert_file_exists "$json_path"
+    assert_file_absent "${json_path}.tmp"
+
+    local expected_sha=""
+    expected_sha="$(file_sha256 "$UPDATER_SCRIPT")"
+    EXPECTED_BREW_MESSAGE="$BREW_MESSAGE" EXPECTED_NPM_MESSAGE="$NPM_MESSAGE" \
+        EXPECTED_SHA="$expected_sha" EXPECTED_LOG_FILE="$LOG_FILE" EXPECTED_SOURCE="${MACOS_DIR}/Update-AllPackages_Mac.sh" \
+        python3 - "$json_path" <<'PY' || fail "last-run JSON content check failed"
+import json
+import os
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+assert data["schemaVersion"] == 1
+assert data["script"] == "Update-AllPackages_Mac"
+assert data["machine"] == "host-a.local"
+assert data["startedAtUtc"] == "2026-10-03T09:46:13Z"
+assert data["updatesCompletedAtUtc"] == "2026-10-03T09:46:39Z"
+assert data["exitCode"] == 2 and isinstance(data["exitCode"], int)
+assert data["outcome"] == "warning"
+assert data["logFile"] == os.environ["EXPECTED_LOG_FILE"]
+assert data["source"]["path"] == os.environ["EXPECTED_SOURCE"]
+assert data["source"]["sha256"] == os.environ["EXPECTED_SHA"] and len(data["source"]["sha256"]) == 64
+assert list(data["phases"]) == [
+    "Brew", "Mas", "MacUpdater", "Npm", "ClaudeCode",
+    "ClaudeDesktop", "Pip", "Pipx", "Rustup", "LogCleanup",
+]
+assert data["phases"]["Brew"] == {"status": "Success", "message": os.environ["EXPECTED_BREW_MESSAGE"]}
+assert data["phases"]["Npm"] == {"status": "Warning", "message": os.environ["EXPECTED_NPM_MESSAGE"]}
+assert data["phases"]["Mas"] == {"status": "Skipped", "message": ""}
+PY
+
+    local code=""
+    local expected_outcome=""
+    local actual_outcome=""
+    for code in 0 1 2; do
+        case "$code" in
+            0) expected_outcome="clean" ;;
+            1) expected_outcome="error" ;;
+            2) expected_outcome="warning" ;;
+        esac
+        write_last_run_json "$code" "2026-10-03T09:46:13Z" "2026-10-03T09:46:39Z"
+        actual_outcome="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["outcome"])' "$json_path")"
+        assert_eq "$expected_outcome" "$actual_outcome" "Outcome for exit code ${code}"
+    done
+)
+
+test_pip_skips_bulk_upgrades() (
+    source "$UPDATER_SCRIPT"
+
+    local fixture_dir="${TEST_ROOT}/pip skip"
+    local mock_bin="${fixture_dir}/bin"
+    local calls_file="${fixture_dir}/pip3.calls"
+    mkdir -p "$mock_bin"
+    : > "$calls_file"
+    LOG_FILE="${fixture_dir}/updater.log"
+    : > "$LOG_FILE"
+
+    cat > "${mock_bin}/pip3" <<'MOCK'
+#!/bin/bash
+printf '%s\n' "$*" >> "$PIP3_CALLS_FILE"
+MOCK
+    chmod 755 "${mock_bin}/pip3"
+
+    PATH="${mock_bin}:${PATH}"
+    PIP3_CALLS_FILE="$calls_file"
+    export PIP3_CALLS_FILE
+    PIP_STATUS="Success"
+    update_pip >/dev/null
+
+    assert_eq "Skipped" "$PIP_STATUS" "pip bulk update status"
+    [ ! -s "$calls_file" ] || fail "update_pip must not invoke pip3 (calls: $(cat "$calls_file"))"
+)
+
+test_uv_tool_fallback_without_pipx() (
+    source "$UPDATER_SCRIPT"
+
+    local fixture_dir="${TEST_ROOT}/uv fallback"
+    local mock_bin="${fixture_dir}/bin"
+    local calls_file="${fixture_dir}/uv.calls"
+    mkdir -p "$mock_bin"
+    : > "$calls_file"
+    LOG_FILE="${fixture_dir}/updater.log"
+    : > "$LOG_FILE"
+
+    cat > "${mock_bin}/uv" <<'MOCK'
+#!/bin/bash
+printf '%s\n' "$*" >> "$UV_CALLS_FILE"
+MOCK
+    chmod 755 "${mock_bin}/uv"
+
+    PATH="${mock_bin}:/usr/bin:/bin"
+    if command -v pipx >/dev/null 2>&1; then
+        printf 'SKIP: pipx is installed in the base PATH; cannot test the uv fallback here\n'
+        return 0
+    fi
+
+    UV_CALLS_FILE="$calls_file"
+    export UV_CALLS_FILE
+    PIPX_STATUS="Skipped"
+    update_pipx >/dev/null </dev/null
+
+    assert_eq "Success" "$PIPX_STATUS" "uv fallback status"
+    assert_contains "$calls_file" "tool upgrade --all"
+)
+
 assert_contains "$UPDATER_SCRIPT" 'if [ "${BASH_SOURCE[0]}" = "$0" ]; then'
 assert_contains "$SETUP_SCRIPT" 'if [ "${BASH_SOURCE[0]}" = "$0" ]; then'
 assert_contains "$UPDATER_SCRIPT" 'managed_packages.add("@anthropic-ai/claude-code")'
@@ -320,5 +582,23 @@ test_claude_code_update_status
 printf 'PASS: Claude Code native update statuses\n'
 test_host_scoped_log_retention
 printf 'PASS: host-scoped path-safe log retention\n'
-test_launchd_rendering
-printf 'PASS: launchd rendering policy\n'
+test_run_with_timeout
+printf 'PASS: timeout helper (native and portable paths)\n'
+test_phase_timeout_sets_error_status
+printf 'PASS: timed-out phase reports Error\n'
+test_run_phase_messages
+printf 'PASS: phase message capture\n'
+test_last_run_json
+printf 'PASS: last-run JSON\n'
+assert_not_contains "$UPDATER_SCRIPT" 'pip3 install'
+assert_not_contains "$UPDATER_SCRIPT" 'pip3 list'
+test_pip_skips_bulk_upgrades
+printf 'PASS: pip bulk upgrades stay skipped\n'
+test_uv_tool_fallback_without_pipx
+printf 'PASS: uv tool fallback\n'
+if [ -x /usr/bin/plutil ]; then
+    test_launchd_rendering
+    printf 'PASS: launchd rendering policy\n'
+else
+    printf 'SKIP: launchd rendering policy (needs macOS plutil)\n'
+fi
