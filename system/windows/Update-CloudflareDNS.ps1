@@ -64,10 +64,12 @@ function Install-CloudflareDnsScheduledTask {
         throw "Config file not found: $ConfigPath. Create it before installing the scheduled task."
     }
 
+    # conhost --headless starts PowerShell with no console window; -WindowStyle Hidden alone still flashes one.
+    $ConhostPath = Join-Path $env:SystemRoot 'System32\conhost.exe'
     $PowerShellPath = (Get-Command powershell.exe -ErrorAction Stop).Source
-    $ActionArguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+    $ActionArguments = "--headless `"$PowerShellPath`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$PSCommandPath`""
     $Action = New-ScheduledTaskAction `
-        -Execute $PowerShellPath `
+        -Execute $ConhostPath `
         -Argument $ActionArguments `
         -WorkingDirectory $PSScriptRoot
     $Trigger = New-ScheduledTaskTrigger -Daily -At $At
