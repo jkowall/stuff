@@ -36,7 +36,20 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Stream Deck's -WindowStyle Hidden still lets the console appear briefly; hide it as early as possible.
+try {
+    Add-Type -Namespace PrompterToggle -Name Win32 -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+'@
+    $consoleWindow = [PrompterToggle.Win32]::GetConsoleWindow()
+    if ($consoleWindow -ne [IntPtr]::Zero) { [void][PrompterToggle.Win32]::ShowWindow($consoleWindow, 0) }
+} catch {
+    # Cosmetic only; never block the toggle.
+}
+
 $logPath = Join-Path $env:TEMP 'Toggle-PrompterDisplayAndRestartCameraHub.log'
+$portCachePath = Join-Path $env:TEMP 'camerahub-port.txt'
 $restartScript = Join-Path $PSScriptRoot 'restart_camera_hub.ps1'
 $script:RpcId = 0
 
@@ -100,7 +113,24 @@ function Invoke-CameraHubRpc {
     $script:RpcId++
     $id = $script:RpcId
 
-    foreach ($port in 1834..1843) {
+    $ports = @(1834..1843)
+    if (Test-Path -LiteralPath $portCachePath) {
+        $cachedPort = [int](Get-Content -LiteralPath $portCachePath -TotalCount 1 -ErrorAction SilentlyContinue)
+        if ($cachedPort -in $ports) { $ports = @($cachedPort) + @($ports | Where-Object { $_ -ne $cachedPort }) }
+    }
+
+    foreach ($port in $ports) {
+        # A closed local port can take seconds to fail inside ConnectAsync; probe it quickly first.
+        $probe = [Net.Sockets.TcpClient]::new()
+        try {
+            $reachable = $probe.ConnectAsync('127.0.0.1', $port).Wait(300) -and $probe.Connected
+        } catch {
+            $reachable = $false
+        } finally {
+            $probe.Dispose()
+        }
+        if (-not $reachable) { continue }
+
         $websocket = [Net.WebSockets.ClientWebSocket]::new()
         $connectTimeout = $null
         $requestTimeout = $null
@@ -148,6 +178,7 @@ function Invoke-CameraHubRpc {
                         throw "Camera Hub RPC '$Method' failed: $($item.error.message)"
                     }
 
+                    Set-Content -LiteralPath $portCachePath -Value $port -ErrorAction SilentlyContinue
                     return [pscustomobject]@{
                         Port = $port
                         Result = $item.result
@@ -288,10 +319,31 @@ function Write-Result {
     }
 }
 
+# Only one run at a time: a second press would otherwise restart Camera Hub under the
+# first run and flip the toggle back.
+$createdNew = $false
+$mutex = [Threading.Mutex]::new($false, 'Global\Toggle-PrompterDisplay', [ref]$createdNew)
+$hasMutex = $false
 try {
-    Toggle-PrompterDisplay | Write-Result
-} catch {
-    Write-Log "ERROR: $($_.Exception.Message)"
+    try {
+        $hasMutex = $mutex.WaitOne(0)
+    } catch [Threading.AbandonedMutexException] {
+        $hasMutex = $true
+    }
+    if (-not $hasMutex) {
+        Write-Log 'Another Prompter toggle is already running; exiting.'
+        return
+    }
 
-    throw
+    try {
+        Toggle-PrompterDisplay | Write-Result
+        Write-Log 'OK'
+    } catch {
+        Write-Log "ERROR: $($_.Exception.Message)"
+
+        throw
+    }
+} finally {
+    if ($hasMutex) { $mutex.ReleaseMutex() }
+    $mutex.Dispose()
 }
