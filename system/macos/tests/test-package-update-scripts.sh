@@ -389,6 +389,8 @@ test_phase_timeout_sets_error_status() (
 sleep 30
 MOCK
     chmod 755 "${mock_bin}/mas"
+    printf '#!/bin/bash\nexit 0\n' > "${mock_bin}/sudo"
+    chmod 755 "${mock_bin}/sudo"
 
     PATH="${mock_bin}:${PATH}"
     UPDATE_COMMAND_TIMEOUT_SECONDS=1
@@ -398,6 +400,28 @@ MOCK
 
     assert_eq "Error" "$MAS_STATUS" "Timed-out phase status"
     assert_contains "$LOG_FILE" "mas upgrade timed out after 1s"
+)
+
+test_mas_skipped_without_sudo() (
+    source "$UPDATER_SCRIPT"
+
+    local fixture_dir="${TEST_ROOT}/mas no sudo"
+    local mock_bin="${fixture_dir}/bin"
+    mkdir -p "$mock_bin"
+    LOG_FILE="${fixture_dir}/updater.log"
+    : > "$LOG_FILE"
+
+    printf '#!/bin/bash\ntouch "%s/mas-ran"\n' "$fixture_dir" > "${mock_bin}/mas"
+    printf '#!/bin/bash\nexit 1\n' > "${mock_bin}/sudo"
+    chmod 755 "${mock_bin}/mas" "${mock_bin}/sudo"
+
+    PATH="${mock_bin}:${PATH}"
+    MAS_STATUS="Skipped"
+    update_mas >/dev/null </dev/null
+
+    assert_eq "Warning" "$MAS_STATUS" "mas without sudo status"
+    assert_contains "$LOG_FILE" "Skipping mas upgrade"
+    [ ! -e "${fixture_dir}/mas-ran" ] || fail "mas ran without sudo credentials"
 )
 
 test_run_phase_messages() (
@@ -585,7 +609,10 @@ printf 'PASS: host-scoped path-safe log retention\n'
 test_run_with_timeout
 printf 'PASS: timeout helper (native and portable paths)\n'
 test_phase_timeout_sets_error_status
+test_mas_skipped_without_sudo
 printf 'PASS: timed-out phase reports Error\n'
+test_mas_skipped_without_sudo
+printf 'PASS: mas skipped without sudo credentials\n'
 test_run_phase_messages
 printf 'PASS: phase message capture\n'
 test_last_run_json

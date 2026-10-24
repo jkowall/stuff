@@ -18,7 +18,7 @@ set -o pipefail
 NPM_CHANNEL_PREFIX="${HOME}/.local"
 export PATH="${NPM_CHANNEL_PREFIX}/bin:/opt/homebrew/opt/node@24/bin:/usr/local/opt/node@24/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 LOG_DIR="$(dirname "$SCRIPT_DIR")/logs"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}" .sh)"
 MACHINE_NAME="$(hostname)"
@@ -39,11 +39,14 @@ BREW_UPDATE_RETRY_DELAY_SECONDS=15
 BREW_UPGRADE_TIMEOUT_SECONDS="${BREW_UPGRADE_TIMEOUT_SECONDS:-${UPDATE_COMMAND_TIMEOUT_SECONDS:-7200}}"
 UPDATE_COMMAND_TIMEOUT_SECONDS="${UPDATE_COMMAND_TIMEOUT_SECONDS:-1800}"
 RUN_WITH_TIMEOUT_KILL_GRACE_SECONDS=10
+SUDO_PROMPT_TIMEOUT_SECONDS=120
 UPDATE_LOCK_FILE="/tmp/${SCRIPT_NAME}.${UID}.lock"
 NPM_GENERIC_ALLOWED_SCRIPTS="@github/keytar,node-pty"
 NPM_CHANNEL_PACKAGES=(
     "@openai/codex@alpha"
 )
+
+ORIGINAL_ARGS=("$@")
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -206,6 +209,25 @@ OSA
     fi
 
     exit 0
+}
+
+# launchd cannot read OneDrive (TCC), but the Terminal session it relaunches into can. Refresh the cached
+# copy from the source here and restart on the new version so edits take effect without re-running setup.
+SOURCE_SCRIPT="${SOURCE_SCRIPT:-${HOME}/Library/CloudStorage/OneDrive-Personal/Stuff/system/macos/Update-AllPackages_Mac.sh}"
+
+refresh_cached_script() {
+    [ -z "${UPDATER_REFRESHED:-}" ] || return 0
+    local self
+    self="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
+    [ -r "$SOURCE_SCRIPT" ] || return 0
+    [ "$SCRIPT_DIR" != "$(cd "$(dirname "$SOURCE_SCRIPT")" 2>/dev/null && pwd -P)" ] || return 0
+    cmp -s "$SOURCE_SCRIPT" "$self" && return 0
+
+    if /usr/bin/install -m 755 "$SOURCE_SCRIPT" "$self" 2>/dev/null; then
+        log "Info" "Cached updater refreshed from $SOURCE_SCRIPT. Restarting on the new version."
+        UPDATER_REFRESHED=1 exec /bin/bash "$self" "${ORIGINAL_ARGS[@]}"
+    fi
+    log "Warning" "Could not refresh cached updater from $SOURCE_SCRIPT."
 }
 
 show_notification() {
@@ -522,6 +544,15 @@ update_mas() {
     log "Info" "============================================================"
     log "Info" "STARTING MAC APP STORE UPDATES"
     log "Info" "============================================================"
+
+    # mas escalates with sudo; without cached credentials it blocks on a password prompt nobody may be watching.
+    if ! sudo -n true 2>/dev/null; then
+        if [ ! -t 0 ] || ! run_with_timeout "$SUDO_PROMPT_TIMEOUT_SECONDS" sudo -v; then
+            MAS_STATUS="Warning"
+            log "Warning" "No sudo credentials available within ${SUDO_PROMPT_TIMEOUT_SECONDS}s. Skipping mas upgrade."
+            return
+        fi
+    fi
 
     log "Info" "Running: mas upgrade"
     local mas_rc=0
@@ -1230,6 +1261,10 @@ log "Info" "============================================================"
 if ! launch_interactive_terminal; then
     log "Error" "Interactive launch failed."
     exit 1
+fi
+
+if [ "$INTERACTIVE_MODE" -eq 1 ]; then
+    refresh_cached_script "${ORIGINAL_ARGS[@]}"
 fi
 
 # Check for Data Saver / Low Data Mode
