@@ -39,7 +39,6 @@ BREW_UPDATE_RETRY_DELAY_SECONDS=15
 BREW_UPGRADE_TIMEOUT_SECONDS="${BREW_UPGRADE_TIMEOUT_SECONDS:-${UPDATE_COMMAND_TIMEOUT_SECONDS:-7200}}"
 UPDATE_COMMAND_TIMEOUT_SECONDS="${UPDATE_COMMAND_TIMEOUT_SECONDS:-1800}"
 RUN_WITH_TIMEOUT_KILL_GRACE_SECONDS=10
-SUDO_PROMPT_TIMEOUT_SECONDS=120
 UPDATE_LOCK_FILE="/tmp/${SCRIPT_NAME}.${UID}.lock"
 NPM_GENERIC_ALLOWED_SCRIPTS="@github/keytar,node-pty"
 NPM_CHANNEL_PACKAGES=(
@@ -545,13 +544,22 @@ update_mas() {
     log "Info" "STARTING MAC APP STORE UPDATES"
     log "Info" "============================================================"
 
-    # mas escalates with sudo; without cached credentials it blocks on a password prompt nobody may be watching.
+    # mas escalates with sudo. Wait for the password however long it takes, keeping the pending marker so a
+    # reboot or closed Terminal re-launches the update later instead of silently skipping the App Store.
     if ! sudo -n true 2>/dev/null; then
-        if [ ! -t 0 ] || ! run_with_timeout "$SUDO_PROMPT_TIMEOUT_SECONDS" sudo -v; then
+        if [ ! -t 0 ]; then
             MAS_STATUS="Warning"
-            log "Warning" "No sudo credentials available within ${SUDO_PROMPT_TIMEOUT_SECONDS}s. Skipping mas upgrade."
+            log "Warning" "No sudo credentials and no terminal to prompt on. Skipping mas upgrade."
             return
         fi
+        mark_pending_interactive_run || true
+        log "Info" "Waiting for sudo password (mas upgrade). A pending retry stays queued until it is entered."
+        if ! sudo -v; then
+            MAS_STATUS="Warning"
+            log "Warning" "sudo authentication failed. Skipping mas upgrade; the pending retry stays queued."
+            return
+        fi
+        clear_pending_interactive_run || true
     fi
 
     log "Info" "Running: mas upgrade"
