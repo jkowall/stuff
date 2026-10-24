@@ -1491,7 +1491,9 @@ function Update-WslClaudeCode {
         # installed per-user via the native installer (~/.local/bin/claude). Root's
         # PATH instead resolves a Windows npm shim through the /mnt/c interop mount,
         # which is a different install entirely and would silently update the wrong thing.
-        $ClaudeCheck = (& wsl.exe -d Ubuntu -- bash -lc "command -v claude" 2>&1 | Out-String).Trim()
+        # stderr is dropped (2>$null): nvm prints an npmrc warning there on every login shell,
+        # and 2>&1 would turn it into NativeCommandError records mixed into the captured value.
+        $ClaudeCheck = (& wsl.exe -d Ubuntu -- bash -lc "command -v claude" 2>$null | Out-String).Trim()
         if ($LASTEXITCODE -ne 0 -or -not $ClaudeCheck) {
             $script:Results.WslClaude.Status = "Skipped"
             $script:Results.WslClaude.Message = "Claude Code not found in WSL Ubuntu (expected native install at ~/.local/bin/claude)"
@@ -1500,7 +1502,7 @@ function Update-WslClaudeCode {
         }
         Write-Log "Found WSL claude at: $ClaudeCheck" -Level Info
 
-        $CurrentVersion = (& wsl.exe -d Ubuntu -- bash -lc "claude --version" 2>&1 | Out-String).Trim()
+        $CurrentVersion = (& wsl.exe -d Ubuntu -- bash -lc "claude --version" 2>$null | Out-String).Trim()
         Write-Log "Current WSL Claude Code: $CurrentVersion" -Level Info
 
         Write-Log "Running as WSL default user: claude update" -Level Info
@@ -1520,7 +1522,7 @@ function Update-WslClaudeCode {
             return
         }
 
-        $UpdatedVersion = (& wsl.exe -d Ubuntu -- bash -lc "claude --version" 2>&1 | Out-String).Trim()
+        $UpdatedVersion = (& wsl.exe -d Ubuntu -- bash -lc "claude --version" 2>$null | Out-String).Trim()
         if (-not $UpdatedVersion) {
             $script:Results.WslClaude.Status = "Warning"
             $script:Results.WslClaude.Message = "Claude Code updated, but version verification failed."

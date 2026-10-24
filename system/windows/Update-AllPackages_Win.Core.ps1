@@ -13,6 +13,7 @@ function ConvertFrom-WingetUpgradeOutput {
     param(
         [Parameter(Mandatory = $true)]
         [AllowEmptyCollection()]
+        [AllowEmptyString()]
         [string[]]$Output,
         [Parameter(Mandatory = $true)]
         [ValidateSet("winget", "msstore")]
