@@ -191,6 +191,13 @@ launch_interactive_terminal() {
     local terminal_cmd
     terminal_cmd="bash '${script_path}' --interactive-run"
 
+    # A run waiting on its sudo prompt holds the lock; opening another Terminal would only leave an idle window.
+    # Keep the pending marker so the retry job tries again once that run is gone.
+    if [ -e "$UPDATE_LOCK_FILE" ] && ! /usr/bin/lockf -s -t 0 "$UPDATE_LOCK_FILE" /usr/bin/true; then
+        log "Info" "Another package update run is already active. Not opening another Terminal."
+        exit 0
+    fi
+
     log "Info" "Interactive mode requested. Relaunching in Terminal for user interaction."
 
     if ! /usr/bin/osascript <<OSA

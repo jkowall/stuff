@@ -424,6 +424,33 @@ test_mas_skipped_without_sudo() (
     [ ! -e "${fixture_dir}/mas-ran" ] || fail "mas ran without sudo credentials"
 )
 
+test_relaunch_skipped_while_locked() (
+    source "$UPDATER_SCRIPT"
+
+    local fixture_dir="${TEST_ROOT}/relaunch locked"
+    mkdir -p "$fixture_dir"
+    LOG_FILE="${fixture_dir}/updater.log"
+    : > "$LOG_FILE"
+    UPDATE_LOCK_FILE="${fixture_dir}/update.lock"
+    : > "$UPDATE_LOCK_FILE"
+    INTERACTIVE_MODE=1
+
+    /usr/bin/lockf -s -t 0 "$UPDATE_LOCK_FILE" sleep 5 &
+    local holder_pid=$!
+    sleep 1
+
+    local rc=0
+    ( launch_interactive_terminal ) </dev/null >/dev/null 2>&1 || rc=$?
+    kill "$holder_pid" 2>/dev/null || true
+    wait "$holder_pid" 2>/dev/null || true
+
+    assert_eq "0" "$rc" "locked relaunch exit status"
+    assert_contains "$LOG_FILE" "Not opening another Terminal"
+    if grep -q "Relaunching in Terminal" "$LOG_FILE"; then
+        fail "Terminal relaunched while another run held the lock"
+    fi
+)
+
 test_run_phase_messages() (
     source "$UPDATER_SCRIPT"
 
@@ -613,6 +640,8 @@ test_mas_skipped_without_sudo
 printf 'PASS: timed-out phase reports Error\n'
 test_mas_skipped_without_sudo
 printf 'PASS: mas skipped without sudo credentials\n'
+test_relaunch_skipped_while_locked
+printf 'PASS: no Terminal relaunch while another run holds the lock\n'
 test_run_phase_messages
 printf 'PASS: phase message capture\n'
 test_last_run_json
