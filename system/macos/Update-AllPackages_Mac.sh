@@ -187,7 +187,7 @@ launch_interactive_terminal() {
     fi
 
     local script_path
-    script_path="$(/usr/bin/realpath "$0" 2>/dev/null || printf '%s' "$0")"
+    script_path="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
     local terminal_cmd
     terminal_cmd="bash '${script_path}' --interactive-run"
 
@@ -875,7 +875,8 @@ for package, versions in data.items():
         fi
     done
 
-    if ! mkdir -p "${NPM_CHANNEL_PREFIX}/bin"; then
+    # npm install --prefix lstat()s <prefix>/lib and fails with ENOENT when only bin exists.
+    if ! mkdir -p "${NPM_CHANNEL_PREFIX}/bin" "${NPM_CHANNEL_PREFIX}/lib"; then
         NPM_STATUS="Warning"
         log "Warning" "Unable to create NPM channel prefix: $NPM_CHANNEL_PREFIX"
         return
