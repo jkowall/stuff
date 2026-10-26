@@ -7,7 +7,9 @@ Camera Hub exposes the same local JSON-RPC websocket used by the Stream Deck
 Camera Hub plugin. Toggle is the default; use -Action On or -Action Off to
 request a specific state. Retries preserve the original target, including when a command
 succeeds but its response is lost. After a restart the script waits for Camera
-Hub and reapplies the target if necessary. Verification checks Camera Hub's
+Hub and reapplies the target if necessary. If Windows locked, slept or woke
+since Camera Hub started, Camera Hub is restarted before the state is read,
+because it can otherwise accept commands the panel ignores. Verification checks Camera Hub's
 reported state; it cannot confirm the physical panel is dark.
 
 .EXAMPLE
@@ -208,6 +210,24 @@ function Restart-CameraHub {
     & $restartScript *> $null
 }
 
+function Test-SystemTransitionSinceCameraHubStart {
+    # After a lock, display sleep or resume Camera Hub can keep accepting Prompter commands
+    # while the panel ignores them; Kernel-Power 566/107/507 mark those transitions.
+    try {
+        $cameraHub = Get-Process -Name 'Camera Hub' -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -First 1
+        if (-not $cameraHub) { return $false }
+        $transition = Get-WinEvent -MaxEvents 1 -ErrorAction SilentlyContinue -FilterHashtable @{
+            LogName = 'System'
+            ProviderName = 'Microsoft-Windows-Kernel-Power'
+            Id = 566, 107, 507
+            StartTime = $cameraHub.StartTime
+        }
+        return [bool]$transition
+    } catch {
+        return $false
+    }
+}
+
 function Get-PrompterValue {
     $properties = (Invoke-CameraHubRpc -Method 'getSupportedPrompterProperties').Result
     $enablePrompter = $properties | Where-Object { $_.propertyID -eq 17 } | Select-Object -First 1
@@ -262,6 +282,14 @@ function Toggle-PrompterDisplay {
     $target = switch ($Action) { 'Off' { 0 } 'On' { 1 } 'Toggle' { $null } }
     $restarted = $false
     $initialValue = $null
+    if ($RestartWhen -ne 'Never' -and (Test-SystemTransitionSinceCameraHubStart)) {
+        Write-Log "System locked, slept or woke since Camera Hub started; restart first=$(-not $DryRun)"
+        if (-not $DryRun) {
+            Restart-CameraHub
+            $restarted = $true
+            $null = Wait-PrompterReady
+        }
+    }
     for ($attempt = 0; $attempt -lt 2; $attempt++) {
         try {
             $currentValue = Get-PrompterValue
