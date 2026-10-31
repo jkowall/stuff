@@ -451,6 +451,61 @@ test_relaunch_skipped_while_locked() (
     fi
 )
 
+test_refresh_cached_script() (
+    source "$UPDATER_SCRIPT"
+
+    local fixture_dir="${TEST_ROOT}/refresh cached"
+    local cached_dir="${fixture_dir}/Application Scripts"
+    local bin_dir="${fixture_dir}/bin"
+    local marker="${fixture_dir}/ran"
+    mkdir -p "$cached_dir" "$bin_dir"
+    LOG_FILE="${fixture_dir}/updater.log"
+    SCRIPT_DIR="$cached_dir"
+    ORIGINAL_ARGS=(--fixture)
+
+    write_fixture() {
+        printf '#!/bin/bash\n# PACKAGE UPDATE STARTED\necho %s > "%s"\n' "$2" "$marker" > "$1"
+    }
+    reset_case() {
+        : > "$LOG_FILE"
+        rm -f "$marker" "${fixture_dir}/onedrive.sh"
+        write_fixture "${cached_dir}/Update-AllPackages_Mac.sh" old
+    }
+    run_refresh() {
+        ( PATH="${bin_dir}:${PATH}"; refresh_cached_script; echo kept > "$marker" ) </dev/null >/dev/null 2>&1 || true
+    }
+    UPDATER_SOURCE_PATHS=("${fixture_dir}/missing.sh" "${fixture_dir}/onedrive.sh")
+
+    # OneDrive copy wins and the updater restarts on it.
+    reset_case
+    write_fixture "${fixture_dir}/onedrive.sh" onedrive
+    printf '#!/bin/bash\nexit 99\n' > "${bin_dir}/curl"
+    chmod +x "${bin_dir}/curl"
+    run_refresh
+    assert_eq "onedrive" "$(cat "$marker")" "OneDrive refresh restarted on new copy"
+    assert_files_equal "${fixture_dir}/onedrive.sh" "${cached_dir}/Update-AllPackages_Mac.sh"
+
+    # OneDrive unreadable (launchd/TCC): fall back to GitHub.
+    reset_case
+    cat > "${bin_dir}/curl" <<EOF
+#!/bin/bash
+while [ "\$1" != "-o" ]; do shift; done
+printf '#!/bin/bash\n# PACKAGE UPDATE STARTED\necho github > "%s"\n' "$marker" > "\$2"
+EOF
+    run_refresh
+    assert_eq "github" "$(cat "$marker")" "GitHub refresh restarted on new copy"
+    assert_contains "$LOG_FILE" "refreshed from https://raw.githubusercontent.com/"
+
+    # A download that fails the syntax check never replaces the cached copy.
+    reset_case
+    printf '#!/bin/bash\nwhile [ "$1" != "-o" ]; do shift; done\necho "if then PACKAGE UPDATE STARTED" > "$2"\n' > "${bin_dir}/curl"
+    run_refresh
+    assert_eq "kept" "$(cat "$marker")" "invalid download keeps running"
+    assert_contains "${cached_dir}/Update-AllPackages_Mac.sh" "echo old"
+    assert_contains "$LOG_FILE" "Running cached copy"
+    [ -z "$(ls -A "$cached_dir" | grep '^\.updater-refresh')" ] || fail "refresh left a temp file behind"
+)
+
 test_run_phase_messages() (
     source "$UPDATER_SCRIPT"
 
@@ -642,6 +697,8 @@ test_mas_skipped_without_sudo
 printf 'PASS: mas skipped without sudo credentials\n'
 test_relaunch_skipped_while_locked
 printf 'PASS: no Terminal relaunch while another run holds the lock\n'
+test_refresh_cached_script
+printf 'PASS: cached updater refresh from OneDrive, then GitHub\n'
 test_run_phase_messages
 printf 'PASS: phase message capture\n'
 test_last_run_json

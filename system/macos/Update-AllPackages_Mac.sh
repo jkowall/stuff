@@ -217,23 +217,51 @@ OSA
     exit 0
 }
 
-# launchd cannot read OneDrive (TCC), but the Terminal session it relaunches into can. Refresh the cached
-# copy from the source here and restart on the new version so edits take effect without re-running setup.
-SOURCE_SCRIPT="${SOURCE_SCRIPT:-${HOME}/Library/CloudStorage/OneDrive-Personal/Stuff/system/macos/Update-AllPackages_Mac.sh}"
+# launchd runs a cached copy because it cannot read OneDrive (TCC). Refresh that copy on every run: prefer the
+# local OneDrive copy (includes unpushed edits; readable from Terminal), else GitHub (works under launchd too).
+UPDATER_SOURCE_URL="${UPDATER_SOURCE_URL:-https://raw.githubusercontent.com/jkowall/stuff/main/system/macos/Update-AllPackages_Mac.sh}"
+UPDATER_SOURCE_PATHS=(
+    "${HOME}/Library/CloudStorage/OneDrive-Personal/Stuff/system/macos/Update-AllPackages_Mac.sh"
+    "${HOME}/OneDrive/Stuff/system/macos/Update-AllPackages_Mac.sh"
+)
 
 refresh_cached_script() {
     [ -z "${UPDATER_REFRESHED:-}" ] || return 0
-    local self
-    self="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
-    [ -r "$SOURCE_SCRIPT" ] || return 0
-    [ "$SCRIPT_DIR" != "$(cd "$(dirname "$SOURCE_SCRIPT")" 2>/dev/null && pwd -P)" ] || return 0
-    cmp -s "$SOURCE_SCRIPT" "$self" && return 0
+    # Running from the repo itself rather than the cached copy: nothing to refresh.
+    [ ! -f "${SCRIPT_DIR}/Setup-PackageUpdateTasks_Mac.sh" ] || return 0
 
-    if /usr/bin/install -m 755 "$SOURCE_SCRIPT" "$self" 2>/dev/null; then
-        log "Info" "Cached updater refreshed from $SOURCE_SCRIPT. Restarting on the new version."
+    local self candidate source="" tmp
+    self="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
+    tmp="$(mktemp "${SCRIPT_DIR}/.updater-refresh.XXXXXX")" || return 0
+
+    for candidate in "${UPDATER_SOURCE_PATHS[@]}"; do
+        if cp "$candidate" "$tmp" 2>/dev/null; then
+            source="$candidate"
+            break
+        fi
+    done
+    if [ -z "$source" ] && curl -fsSL --max-time 30 -o "$tmp" "$UPDATER_SOURCE_URL" 2>/dev/null; then
+        source="$UPDATER_SOURCE_URL"
+    fi
+
+    if [ -z "$source" ] || ! /bin/bash -n "$tmp" 2>/dev/null || ! grep -q "PACKAGE UPDATE STARTED" "$tmp"; then
+        rm -f "$tmp"
+        log "Warning" "Could not refresh cached updater from OneDrive or GitHub. Running cached copy."
+        return 0
+    fi
+    if cmp -s "$tmp" "$self"; then
+        rm -f "$tmp"
+        return 0
+    fi
+
+    # Rename over the cached copy so a run already executing the old file keeps reading its original inode.
+    chmod 755 "$tmp"
+    if mv -f "$tmp" "$self"; then
+        log "Info" "Cached updater refreshed from $source. Restarting on the new version."
         UPDATER_REFRESHED=1 exec /bin/bash "$self" "${ORIGINAL_ARGS[@]}"
     fi
-    log "Warning" "Could not refresh cached updater from $SOURCE_SCRIPT."
+    rm -f "$tmp"
+    log "Warning" "Could not replace cached updater at $self. Running cached copy."
 }
 
 show_notification() {
@@ -1274,13 +1302,11 @@ log "Info" "Script Directory: $SCRIPT_DIR"
 log "Info" "Log File: $LOG_FILE"
 log "Info" "============================================================"
 
+refresh_cached_script
+
 if ! launch_interactive_terminal; then
     log "Error" "Interactive launch failed."
     exit 1
-fi
-
-if [ "$INTERACTIVE_MODE" -eq 1 ]; then
-    refresh_cached_script "${ORIGINAL_ARGS[@]}"
 fi
 
 # Check for Data Saver / Low Data Mode

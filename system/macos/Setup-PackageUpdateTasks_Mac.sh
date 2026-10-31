@@ -41,7 +41,8 @@ Usage: $(basename "$0") [--interactive | --remove]
 Installs or removes a weekly launchd job for Update-AllPackages_Mac.sh.
 Reinstalling replaces any existing job with the same label.
 The updater is cached under ~/Library/Application Scripts at install time so
-launchd does not need runtime access to OneDrive/CloudStorage paths.
+launchd does not need runtime access to OneDrive/CloudStorage paths. Each run
+refreshes that copy from OneDrive when readable, otherwise from GitHub.
 The default install is non-interactive and removes any pending retry job.
 Use --interactive to open Terminal when launchd triggers so you can enter
 sudo/app-specific passwords if required. Interactive installs also add a
