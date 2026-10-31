@@ -36,6 +36,10 @@ assert_file_absent() {
     [ ! -e "$1" ] || fail "Expected path to be absent: $1"
 }
 
+assert_files_equal() {
+    cmp -s "$1" "$2" || fail "Expected files to match: $1 $2"
+}
+
 assert_contains() {
     local file="$1"
     local text="$2"
@@ -311,23 +315,116 @@ MOCK
     export CRONTAB_CALLS_FILE CRONTAB_STATE_DIR
 
     CRON_FILE="${fixture_dir}/etc-cron-d/weekly-package-updates"
+    SYSTEMD_DIR="${fixture_dir}/systemd"
+    INSTALL_DIR="${fixture_dir}/usr-local-lib/weekly-package-updates"
+    CACHED_UPDATE_SCRIPT="${INSTALL_DIR}/Update-AllPackages_Linux.sh"
+    LOG_DIR="${fixture_dir}/var-log"
+    SUDO_USER="tester"
+    mkdir -p "$SYSTEMD_DIR"
 
-    # Seed a legacy root crontab entry (old self-scheduling pattern) to
-    # verify install_schedule cleans it up alongside an unrelated entry.
-    printf '0 3 * * 0 /bin/bash %s\n0 9 * * 1 /usr/bin/true\n' "$UPDATE_SCRIPT" > "${crontab_state}/root.crontab"
+    cat > "${mock_bin}/systemctl" <<'MOCK'
+#!/bin/bash
+printf '%s\n' "$*" >> "$SYSTEMCTL_CALLS_FILE"
+MOCK
+    chmod 755 "${mock_bin}/systemctl"
+    SYSTEMCTL_CALLS_FILE="${fixture_dir}/systemctl.calls"
+    export SYSTEMCTL_CALLS_FILE
+    : > "$SYSTEMCTL_CALLS_FILE"
 
+    # Legacy entries: an old-layout path in root's crontab and a cron.d file from the previous setup.
+    printf '0 3 * * 0 /bin/bash /mnt/c/OneDrive/Stuff/system/Update-AllPackages_Linux.sh\n0 9 * * 1 /usr/bin/true\n' \
+        > "${crontab_state}/root.crontab"
+    printf '0 1 * * 6 root /bin/bash %s\n' "$UPDATE_SCRIPT" > "$CRON_FILE"
+
+    # systemd: timer catches up after boot, runs the cached copy as root with the recorded user.
+    has_systemd() { return 0; }
     install_schedule > "${fixture_dir}/install.out"
 
-    assert_file_exists "$CRON_FILE"
-    assert_contains "$CRON_FILE" "$CRON_SCHEDULE"
-    assert_contains "$CRON_FILE" "root /bin/bash"
-    assert_contains "$CRON_FILE" "$UPDATE_SCRIPT"
-    assert_contains "$CRON_FILE" "SHELL=/bin/bash"
-    assert_not_contains "${crontab_state}/root.crontab" "$UPDATE_SCRIPT"
+    local service="${SYSTEMD_DIR}/weekly-package-updates.service"
+    local timer="${SYSTEMD_DIR}/weekly-package-updates.timer"
+    assert_files_equal "$UPDATE_SCRIPT" "$CACHED_UPDATE_SCRIPT"
+    [ -d "$LOG_DIR" ] || fail "log directory not created"
+    assert_contains "$timer" "OnCalendar=Sat *-*-* 01:00:00"
+    assert_contains "$timer" "Persistent=true"
+    assert_contains "$service" "ExecStart=/bin/bash ${CACHED_UPDATE_SCRIPT}"
+    assert_contains "$service" 'Environment="PACKAGE_UPDATE_USER=tester"'
+    assert_contains "$service" "Environment=\"PACKAGE_UPDATE_LOG_DIR=${LOG_DIR}\""
+    assert_contains "$SYSTEMCTL_CALLS_FILE" "enable --now weekly-package-updates.timer"
+    assert_file_absent "$CRON_FILE"
+    assert_not_contains "${crontab_state}/root.crontab" "Update-AllPackages_Linux.sh"
     assert_contains "${crontab_state}/root.crontab" "/usr/bin/true"
 
     remove_schedule > "${fixture_dir}/remove.out"
+    assert_file_absent "$service"
+    assert_file_absent "$timer"
+    assert_file_absent "$INSTALL_DIR"
+    assert_contains "$SYSTEMCTL_CALLS_FILE" "disable --now weekly-package-updates.timer"
+
+    # No systemd: cron fallback runs the cached copy with the same environment.
+    has_systemd() { return 1; }
+    install_schedule > "${fixture_dir}/install-cron.out"
+    assert_contains "$CRON_FILE" "$CRON_SCHEDULE root /bin/bash ${CACHED_UPDATE_SCRIPT}"
+    assert_contains "$CRON_FILE" "PACKAGE_UPDATE_USER=tester"
+    assert_contains "$CRON_FILE" "PACKAGE_UPDATE_LOG_DIR=${LOG_DIR}"
+    assert_contains "$CRON_FILE" "SHELL=/bin/bash"
+    assert_contains "${fixture_dir}/install-cron.out" "cron skips runs missed"
+    remove_schedule > "${fixture_dir}/remove-cron.out"
     assert_file_absent "$CRON_FILE"
+
+    # WSL: install refuses (the Windows updater covers WSL).
+    local rc=0
+    ( is_wsl() { return 0; }; main ) > "${fixture_dir}/wsl.out" 2>&1 || rc=$?
+    assert_eq "1" "$rc" "WSL install exit status"
+    assert_contains "${fixture_dir}/wsl.out" "WSL detected"
+)
+
+test_refresh_cached_script() (
+    source "$UPDATER_SCRIPT"
+
+    local fixture_dir="${TEST_ROOT}/refresh cached"
+    local mock_bin="${fixture_dir}/mock-bin"
+    local marker="${fixture_dir}/ran"
+    mkdir -p "$mock_bin"
+    LOG_FILE="${fixture_dir}/updater.log"
+    SCRIPT_DIR="${fixture_dir}/cache"
+    SCRIPT_PATH="${SCRIPT_DIR}/Update-AllPackages_Linux.sh"
+    ORIGINAL_ARGS=(--fixture)
+    mkdir -p "$SCRIPT_DIR"
+
+    reset_case() {
+        : > "$LOG_FILE"
+        rm -f "$marker"
+        printf '#!/bin/bash\n# PACKAGE UPDATE STARTED\necho old > "%s"\n' "$marker" > "$SCRIPT_PATH"
+    }
+    mock_curl() {
+        printf '#!/bin/bash\nwhile [ "$1" != "-o" ]; do shift; done\nprintf "%%s" "$CURL_BODY" > "$2"\n' > "${mock_bin}/curl"
+        chmod 755 "${mock_bin}/curl"
+    }
+    run_refresh() {
+        ( PATH="${mock_bin}:${PATH}"; refresh_cached_script; echo kept > "$marker" ) </dev/null >/dev/null 2>&1 || true
+    }
+    mock_curl
+
+    # New version on GitHub: replace the cached copy and restart on it.
+    reset_case
+    CURL_BODY="$(printf '#!/bin/bash\n# PACKAGE UPDATE STARTED\necho github > "%s"\n' "$marker")" run_refresh
+    assert_eq "github" "$(cat "$marker")" "refresh restarted on GitHub copy"
+    assert_contains "$LOG_FILE" "refreshed from https://raw.githubusercontent.com/"
+
+    # Download fails the syntax check: keep running the cached copy.
+    reset_case
+    CURL_BODY='if then PACKAGE UPDATE STARTED' run_refresh
+    assert_eq "kept" "$(cat "$marker")" "invalid download keeps running"
+    assert_contains "$SCRIPT_PATH" "echo old"
+    assert_contains "$LOG_FILE" "Running cached copy"
+
+    # Running from the repo (setup script alongside): never refresh.
+    reset_case
+    : > "${SCRIPT_DIR}/Setup-PackageUpdateTasks_Linux.sh"
+    CURL_BODY="$(printf '#!/bin/bash\n# PACKAGE UPDATE STARTED\necho github > "%s"\n' "$marker")" run_refresh
+    assert_eq "kept" "$(cat "$marker")" "repo copy is not refreshed"
+    rm -f "${SCRIPT_DIR}/Setup-PackageUpdateTasks_Linux.sh"
+    [ -z "$(ls -A "$SCRIPT_DIR" | grep '^\.updater-refresh' || true)" ] || fail "refresh left a temp file behind"
 )
 
 test_pip_never_bulk_upgrades() (
@@ -564,7 +661,7 @@ assert_contains "$UPDATER_SCRIPT" 'timeout --kill-after='
 # Regression guard: Claude Code must be resolved against the invoking user
 # (SUDO_USER), never defaulted straight to $HOME, since this script runs
 # self-elevated to root and root's $HOME is /root.
-assert_contains "$UPDATER_SCRIPT" 'target_user="${SUDO_USER:-}"'
+assert_contains "$UPDATER_SCRIPT" 'target_user="${SUDO_USER:-${PACKAGE_UPDATE_USER:-}}"'
 assert_not_contains "$UPDATER_SCRIPT" 'CLAUDE_CODE_BINARY="${CLAUDE_CODE_BINARY:-${HOME}/.local/bin/claude}"'
 
 test_sourcing_does_not_create_log_directory
@@ -576,7 +673,9 @@ printf 'PASS: Claude Code native update statuses\n'
 test_host_scoped_log_retention
 printf 'PASS: host-scoped log retention\n'
 test_cron_rendering
-printf 'PASS: cron rendering and legacy cleanup\n'
+printf 'PASS: systemd timer, cron fallback, WSL guard and legacy cleanup\n'
+test_refresh_cached_script
+printf 'PASS: cached updater refresh from GitHub\n'
 test_pip_never_bulk_upgrades
 printf 'PASS: pip tooling never bulk-upgrades and propagates exit codes\n'
 test_run_with_timeout_terminates_commands

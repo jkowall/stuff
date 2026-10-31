@@ -41,8 +41,8 @@ The Windows updater atomically writes `logs/Update-AllPackages_Win_<machine>_las
 | Script | Description |
 |--------|-------------|
 | `Update-AllPackages_Linux.sh` | Weekly updater for apt, snap, flatpak, npm, Claude Code, pip, and rustup. Self-elevates to root, but runs `claude update` as the invoking (`SUDO_USER`) account so it targets that user's native `~/.local/bin/claude` install instead of root's. |
-| `Setup-PackageUpdateTasks_Linux.sh` | Installs/removes the Linux weekly cron schedule. |
-| `tests/test-package-update-scripts.sh` | Dependency-free offline regression tests for hermetic sourcing, summary notifications, Claude Code update statuses (including the root-vs-invoking-user guard), host-scoped log retention, and cron rendering/legacy cleanup. |
+| `Setup-PackageUpdateTasks_Linux.sh` | Installs/removes the Linux weekly systemd timer (runs after boot if missed; cron fallback without systemd). Runs a root-owned copy in `/usr/local/lib/weekly-package-updates` that refreshes itself from GitHub; logs to `/var/log/package-updates`. Refuses to install on WSL, which the Windows updater covers. |
+| `tests/test-package-update-scripts.sh` | Dependency-free offline regression tests for hermetic sourcing, summary notifications, Claude Code update statuses (including the root-vs-invoking-user guard), host-scoped log retention, systemd timer/cron rendering, WSL guard, legacy cleanup, and GitHub self-refresh of the cached updater. |
 
 ## Offline Package Updater Tests
 

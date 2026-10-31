@@ -9,7 +9,11 @@
 #     Logs all output to a timestamped file, writes a machine-readable last-run JSON,
 #     and shows desktop notifications.
 #     Environment: PACKAGE_UPDATE_TIMEOUT (seconds per external command, default 1800, 0 disables),
-#     PACKAGE_UPDATE_KILL_AFTER (grace seconds before SIGKILL, default 30).
+#     PACKAGE_UPDATE_KILL_AFTER (grace seconds before SIGKILL, default 30),
+#     PACKAGE_UPDATE_USER (account for per-user tools when no SUDO_USER, e.g. under systemd/cron),
+#     PACKAGE_UPDATE_LOG_DIR (log directory, default ../logs next to this script).
+#     When run from the cached copy installed by Setup-PackageUpdateTasks_Linux.sh, it refreshes
+#     itself from GitHub at the start of each run.
 
 # ============================================================================
 # CONFIGURATION
@@ -19,7 +23,9 @@ set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
-LOG_DIR="$(dirname "$SCRIPT_DIR")/logs"
+LOG_DIR="${PACKAGE_UPDATE_LOG_DIR:-$(dirname "$SCRIPT_DIR")/logs}"
+UPDATER_SOURCE_URL="${UPDATER_SOURCE_URL:-https://raw.githubusercontent.com/jkowall/stuff/main/system/linux/Update-AllPackages_Linux.sh}"
+ORIGINAL_ARGS=("$@")
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}" .sh)"
 MACHINE_NAME="$(hostname)"
 TIMESTAMP="$(date +%Y-%m-%d_%H-%M)"
@@ -188,6 +194,37 @@ acquire_update_lock() {
     return 0
 }
 
+# The scheduler runs a root-owned cached copy of this script. Replace it with the latest version from GitHub
+# (syntax-checked) and restart on it, so pushed changes take effect without re-running setup.
+refresh_cached_script() {
+    [ -z "${UPDATER_REFRESHED:-}" ] || return 0
+    # Running from the repo itself rather than the cached copy: nothing to refresh.
+    [ ! -f "${SCRIPT_DIR}/Setup-PackageUpdateTasks_Linux.sh" ] || return 0
+
+    local tmp
+    tmp="$(mktemp "${SCRIPT_DIR}/.updater-refresh.XXXXXX")" || return 0
+
+    if ! curl -fsSL --max-time 30 -o "$tmp" "$UPDATER_SOURCE_URL" 2>/dev/null \
+        || ! /bin/bash -n "$tmp" 2>/dev/null || ! grep -q "PACKAGE UPDATE STARTED" "$tmp"; then
+        rm -f "$tmp"
+        log "Warning" "Could not refresh cached updater from GitHub. Running cached copy."
+        return 0
+    fi
+    if cmp -s "$tmp" "$SCRIPT_PATH"; then
+        rm -f "$tmp"
+        return 0
+    fi
+
+    # Rename over the cached copy so a run already executing the old file keeps reading its original inode.
+    chmod 755 "$tmp"
+    if mv -f "$tmp" "$SCRIPT_PATH"; then
+        log "Info" "Cached updater refreshed from ${UPDATER_SOURCE_URL}. Restarting on the new version."
+        UPDATER_REFRESHED=1 exec /bin/bash "$SCRIPT_PATH" "${ORIGINAL_ARGS[@]}"
+    fi
+    rm -f "$tmp"
+    log "Warning" "Could not replace cached updater at ${SCRIPT_PATH}. Running cached copy."
+}
+
 # This script self-elevates to root, so per-user tools (pipx, uv) must run as the invoking user.
 refresh_tool_user_context() {
     TOOL_USER_PREFIX=()
@@ -319,11 +356,12 @@ update_claude_code() {
     # is /root, not the invoking user's home. Claude Code is installed
     # per-user via the native installer (~/.local/bin/claude), so the update
     # must run as the original user (SUDO_USER) or it silently targets the
-    # wrong (nonexistent) install path under /root.
-    local target_user="${SUDO_USER:-}"
+    # wrong (nonexistent) install path under /root. Scheduled runs have no SUDO_USER, so setup passes
+    # PACKAGE_UPDATE_USER instead.
+    local target_user="${SUDO_USER:-${PACKAGE_UPDATE_USER:-}}"
 
     if [ -z "$target_user" ] || [ "$target_user" = "root" ]; then
-        log "Info" "No non-root invoking user detected (run via sudo as a real user to enable this). Skipping Claude Code update."
+        log "Info" "No non-root invoking user detected (run via sudo or set PACKAGE_UPDATE_USER). Skipping Claude Code update."
         CLAUDE_CODE_STATUS="Skipped"
         return 0
     fi
@@ -647,6 +685,8 @@ main() {
     log "Info" "Script Directory: $SCRIPT_DIR"
     log "Info" "Log File: $LOG_FILE"
     log "Info" "============================================================"
+
+    refresh_cached_script
 
     local lock_rc=0
     acquire_update_lock || lock_rc=$?

@@ -56,7 +56,7 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 - **`system/linux/Update-AllPackages_Linux.sh`** - Linux (Ubuntu) package update script
 - **`system/macos/Update-AllPackages_Mac.sh`** - macOS package update script
 - **`system/windows/Setup-PackageUpdateTasks.ps1`** - Windows Task Scheduler setup and cleanup for package updates
-- **`system/linux/Setup-PackageUpdateTasks_Linux.sh`** - Linux cron setup and cleanup for package updates
+- **`system/linux/Setup-PackageUpdateTasks_Linux.sh`** - Linux systemd timer (cron fallback) setup and cleanup for package updates
 - **`system/macos/Setup-PackageUpdateTasks_Mac.sh`** - macOS launchd setup and cleanup for package updates
 - **`system/windows/Update-CloudflareDNS.ps1`** - Makes external API calls to Cloudflare
 - **`system/windows/Toggle-PrompterDisplayAndRestartCameraHub.ps1`** - Toggles the Elgato Prompter display and restarts Camera Hub after power-off
@@ -166,7 +166,7 @@ git config commit.gpgsign true
 │   │   └── Toggle-PrompterDisplayAndRestartCameraHub.ps1 # Toggle Prompter and restart Camera Hub
 │   └── linux/                         # Linux scripts
 │       ├── Update-AllPackages_Linux.sh # Linux package updater
-│       └── Setup-PackageUpdateTasks_Linux.sh # Linux cron setup
+│       └── Setup-PackageUpdateTasks_Linux.sh # Linux systemd timer setup
 │
 ├── media/                             # Media Processing
 │   ├── Convert-Mp4ToIg.ps1           # Instagram video converter

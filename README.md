@@ -69,7 +69,7 @@ The `system/` directory is organized by platform: `macos/`, `windows/`, and `lin
 | Script | Description |
 |--------|-------------|
 | [`Update-AllPackages_Linux.sh`](system/linux/Update-AllPackages_Linux.sh) | Linux (Ubuntu) package updater (apt, snap, flatpak, npm, pip, rustup). |
-| [`Setup-PackageUpdateTasks_Linux.sh`](system/linux/Setup-PackageUpdateTasks_Linux.sh) | Installs/removes the Linux weekly cron schedule. |
+| [`Setup-PackageUpdateTasks_Linux.sh`](system/linux/Setup-PackageUpdateTasks_Linux.sh) | Installs/removes the Linux weekly systemd timer (cron fallback); the scheduled copy self-updates from GitHub. |
 
 Package updater scripts no longer schedule themselves when you run them manually. Use the platform-specific setup script to install or remove the weekly schedule:
 
