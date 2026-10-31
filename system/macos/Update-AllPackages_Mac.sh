@@ -27,6 +27,8 @@ LOG_FILE="${LOG_DIR}/${SCRIPT_NAME}_${MACHINE_NAME}_${TIMESTAMP}.log"
 INTERACTIVE_MODE=0
 PENDING_ONLY=0
 PENDING_FILE="${SCRIPT_DIR}/pending-interactive-update"
+# Read by the login catch-up job (see Setup-PackageUpdateTasks_Mac.sh) to detect a missed weekly run.
+LAST_RUN_STAMP="${SCRIPT_DIR}/last-run-started"
 MACUPDATER_CLIENT="/Applications/MacUpdater.app/Contents/Resources/macupdater_client"
 MACUPDATER_SCAN_TIMEOUT_SECONDS=120
 MACUPDATER_APP_TIMEOUT_SECONDS=900
@@ -1337,6 +1339,10 @@ if [ "$LOCK_STATUS" -ne 0 ]; then
 fi
 
 RUN_STARTED_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# Only the scheduled (cached) copy records runs; a manual run from the repo must not write into it.
+if [ ! -f "${SCRIPT_DIR}/Setup-PackageUpdateTasks_Mac.sh" ]; then
+    touch "$LAST_RUN_STAMP" 2>/dev/null || log "Warning" "Could not record run start in $LAST_RUN_STAMP."
+fi
 
 # Cleanup
 run_phase LOG_CLEANUP_MESSAGE cleanup_logs

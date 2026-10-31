@@ -9,11 +9,15 @@ PLIST_PATH="${PLIST_DIR}/com.jkowa.weekly-package-updates.plist"
 LABEL="com.jkowa.weekly-package-updates"
 PENDING_PLIST_PATH="${PLIST_DIR}/com.jkowa.weekly-package-updates.pending.plist"
 PENDING_LABEL="com.jkowa.weekly-package-updates.pending"
+CATCHUP_PLIST_PATH="${PLIST_DIR}/com.jkowa.weekly-package-updates.catchup.plist"
+CATCHUP_LABEL="com.jkowa.weekly-package-updates.catchup"
+CATCHUP_MAX_AGE_SECONDS=$((7 * 24 * 60 * 60))
 LAUNCHD_LOG="${HOME}/Library/Logs/com.jkowa.weekly-package-updates.log"
 RUNNER_DIR="${HOME}/Library/Application Scripts/${LABEL}"
 RUNNER_PATH="${RUNNER_DIR}/run.sh"
 CACHED_UPDATE_SCRIPT="${RUNNER_DIR}/Update-AllPackages_Mac.sh"
 PENDING_FILE="${RUNNER_DIR}/pending-interactive-update"
+LAST_RUN_STAMP="${RUNNER_DIR}/last-run-started"
 INTERACTIVE_MODE=0
 
 write_status() {
@@ -47,6 +51,8 @@ The default install is non-interactive and removes any pending retry job.
 Use --interactive to open Terminal when launchd triggers so you can enter
 sudo/app-specific passwords if required. Interactive installs also add a
 15-minute pending retry job for cases where Terminal cannot open until login/unlock.
+A login catch-up job runs the update at login when the last run started more than
+7 days ago (e.g. the Mac was shut down on Saturday at 1:00 AM).
 EOF
 }
 
@@ -55,11 +61,15 @@ bootout_agent() {
         launchctl unload "$PLIST_PATH" >/dev/null 2>&1 || true
     launchctl bootout "gui/$(id -u)" "$PENDING_PLIST_PATH" >/dev/null 2>&1 || \
         launchctl unload "$PENDING_PLIST_PATH" >/dev/null 2>&1 || true
+    launchctl bootout "gui/$(id -u)" "$CATCHUP_PLIST_PATH" >/dev/null 2>&1 || \
+        launchctl unload "$CATCHUP_PLIST_PATH" >/dev/null 2>&1 || true
 }
 
 bootstrap_agent() {
     launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH" >/dev/null 2>&1 || \
         launchctl load -w "$PLIST_PATH"
+    launchctl bootstrap "gui/$(id -u)" "$CATCHUP_PLIST_PATH" >/dev/null 2>&1 || \
+        launchctl load -w "$CATCHUP_PLIST_PATH"
 
     if [ "$INTERACTIVE_MODE" -eq 1 ]; then
         launchctl bootstrap "gui/$(id -u)" "$PENDING_PLIST_PATH" >/dev/null 2>&1 || \
@@ -84,8 +94,13 @@ remove_schedule() {
         write_status "Info" "No launchd job file found at ${PENDING_PLIST_PATH}."
     fi
 
+    if [ -f "$CATCHUP_PLIST_PATH" ]; then
+        rm -f "$CATCHUP_PLIST_PATH"
+        write_status "Success" "Removed launchd job ${CATCHUP_LABEL}."
+    fi
+
     if [ -d "$RUNNER_DIR" ]; then
-        rm -f "$RUNNER_PATH" "$CACHED_UPDATE_SCRIPT" "$PENDING_FILE"
+        rm -f "$RUNNER_PATH" "$CACHED_UPDATE_SCRIPT" "$PENDING_FILE" "$LAST_RUN_STAMP"
         rmdir "$RUNNER_DIR" 2>/dev/null || true
         write_status "Success" "Removed local runner ${RUNNER_DIR}."
     fi
@@ -104,9 +119,19 @@ set -euo pipefail
 CACHED_SCRIPT="${CACHED_UPDATE_SCRIPT}"
 LOG_PATH="${LAUNCHD_LOG}"
 PENDING_FILE="${PENDING_FILE}"
+LAST_RUN_STAMP="${LAST_RUN_STAMP}"
 
 if [ "\${1:-}" = "--run-pending" ] && [ ! -f "\$PENDING_FILE" ]; then
     exit 0
+fi
+
+# Login catch-up: run only when the last run started more than 7 days ago (the scheduled run was missed).
+if [ "\${1:-}" = "--catch-up" ]; then
+    shift
+    if [ -f "\$LAST_RUN_STAMP" ] && [ \$((\$(date +%s) - \$(stat -f %m "\$LAST_RUN_STAMP"))) -lt ${CATCHUP_MAX_AGE_SECONDS} ]; then
+        exit 0
+    fi
+    echo "\$(date '+%Y-%m-%d %H:%M:%S') Login catch-up: last scheduled update was missed. Running now." >> "\$LOG_PATH"
 fi
 
 if [ ! -x "\$CACHED_SCRIPT" ]; then
@@ -195,10 +220,38 @@ EOF
         rm -f "$PENDING_PLIST_PATH" "$PENDING_FILE"
     fi
 
+    cat > "$CATCHUP_PLIST_PATH" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${CATCHUP_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>${RUNNER_PATH}</string>
+        <string>--catch-up</string>
+${runner_args}
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/dev/null</string>
+    <key>StandardErrorPath</key>
+    <string>${LAUNCHD_LOG}</string>
+</dict>
+</plist>
+EOF
+
+    # Count installing as a run so loading the catch-up job now does not start an update immediately.
+    [ -f "$LAST_RUN_STAMP" ] || touch "$LAST_RUN_STAMP"
+
     bootstrap_agent
 
     write_status "Success" "Installed launchd job ${LABEL}."
     write_status "Info" "Schedule: Every Saturday at 1:00 AM"
+    write_status "Success" "Installed login catch-up job ${CATCHUP_LABEL} (runs at login if the last run is over 7 days old)."
     write_status "Info" "Plist: ${PLIST_PATH}"
     write_status "Info" "Runner: ${RUNNER_PATH}"
     write_status "Info" "Source script cached from: ${UPDATE_SCRIPT}"

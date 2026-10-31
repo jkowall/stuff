@@ -47,7 +47,7 @@ The `system/` directory is organized by platform: `macos/`, `windows/`, and `lin
 | [`audit_apps.sh`](system/macos/audit_apps.sh) | Audits installed GUI applications and identifies their source (Homebrew, App Store, or Manual). |
 | [`sync_apps.sh`](system/macos/sync_apps.sh) | Compares an audit file with local state and installs missing managed apps. |
 | [`Update-AllPackages_Mac.sh`](system/macos/Update-AllPackages_Mac.sh) | Weekly updater for Homebrew, Mac App Store (`mas`), Claude Code, MacUpdater, generic npm packages, pipx apps when installed, and rustup. It tracks Codex alpha under `~/.local`, updates Anthropic's native Claude Code installation on its configured channel, and reports how Claude Desktop is updated. |
-| [`Setup-PackageUpdateTasks_Mac.sh`](system/macos/Setup-PackageUpdateTasks_Mac.sh) | Installs/removes the macOS weekly launchd job for updates. |
+| [`Setup-PackageUpdateTasks_Mac.sh`](system/macos/Setup-PackageUpdateTasks_Mac.sh) | Installs/removes the macOS weekly launchd job for updates, plus a login catch-up when the weekly run was missed; the scheduled copy self-updates from OneDrive/GitHub. |
 | [`test-package-update-scripts.sh`](system/macos/tests/test-package-update-scripts.sh) | Offline regression tests for updater status, Claude Code handling, host-scoped log retention, and launchd rendering. |
 
 #### Windows (`system/windows/`)

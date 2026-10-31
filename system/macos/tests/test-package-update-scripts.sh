@@ -306,6 +306,38 @@ MOCK
     assert_file_absent "$PENDING_FILE"
     assert_contains "$launchctl_calls" "$main_bootstrap"
     assert_not_contains "$launchctl_calls" "$pending_bootstrap"
+
+    # Login catch-up job: always installed, runs at load, carries --interactive in interactive mode.
+    local catchup_bootstrap="bootstrap"$'\t'"gui/${test_uid}"$'\t'"${CATCHUP_PLIST_PATH}"$'\t'
+    /usr/bin/plutil -lint "$CATCHUP_PLIST_PATH" >/dev/null
+    assert_contains "$CATCHUP_PLIST_PATH" "<string>--catch-up</string>"
+    assert_contains "$CATCHUP_PLIST_PATH" "<key>RunAtLoad</key>"
+    assert_not_contains "$CATCHUP_PLIST_PATH" "<string>--interactive</string>"
+    assert_contains "$launchctl_calls" "$catchup_bootstrap"
+    assert_file_exists "$LAST_RUN_STAMP"
+    INTERACTIVE_MODE=1
+    install_schedule > "${TEST_ROOT}/interactive-catchup.out"
+    /usr/bin/plutil -lint "$CATCHUP_PLIST_PATH" >/dev/null
+    assert_contains "$CATCHUP_PLIST_PATH" "<string>--interactive</string>"
+
+    # run.sh --catch-up: skip while the last run is recent, otherwise run the updater without --catch-up.
+    local args_file="${TEST_ROOT}/catchup-args"
+    printf '#!/bin/bash\nprintf "%%s\\n" "$*" > "%s"\n' "$args_file" > "$CACHED_UPDATE_SCRIPT"
+    rm -f "$args_file"
+    touch "$LAST_RUN_STAMP"
+    /bin/bash "$RUNNER_PATH" --catch-up --interactive
+    assert_file_absent "$args_file"
+    touch -t "$(date -v-8d +%Y%m%d%H%M)" "$LAST_RUN_STAMP"
+    /bin/bash "$RUNNER_PATH" --catch-up --interactive
+    assert_eq "--interactive" "$(cat "$args_file")" "catch-up runs updater after a missed week"
+    assert_contains "$LAUNCHD_LOG" "Login catch-up"
+    rm -f "$args_file" "$LAST_RUN_STAMP"
+    /bin/bash "$RUNNER_PATH" --catch-up
+    assert_file_exists "$args_file"
+
+    remove_schedule > "${TEST_ROOT}/remove.out"
+    assert_file_absent "$CATCHUP_PLIST_PATH"
+    assert_file_absent "$RUNNER_DIR"
 )
 
 test_run_with_timeout() (
