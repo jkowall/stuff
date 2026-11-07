@@ -133,6 +133,37 @@ log() {
     printf '%s\n' "$log_entry" >> "$LOG_FILE"
 }
 
+# The log can live in a OneDrive folder (when run from the repo copy). Once OneDrive starts syncing a changed file,
+# writes through a descriptor that was already open fail with "Operation timed out", so `tee -a` or a long-lived
+# `2>>"$LOG_FILE"` silently drops command output. Every log write therefore opens the file just for that write.
+
+# Like `tee -a "$LOG_FILE"`: copies stdin to stdout and appends each line to the log.
+tee_to_log() {
+    local line
+    while IFS= read -r line || [ -n "$line" ]; do
+        printf '%s\n' "$line"
+        printf '%s\n' "$line" >> "$LOG_FILE" 2>/dev/null || true
+    done
+}
+
+# Runs a command with stdout untouched and stderr appended to the log after it finishes.
+# Stderr is staged in a local temp file so the log is never held open while the command runs.
+run_with_stderr_logged() {
+    local stderr_file=""
+    if ! stderr_file="$(mktemp -t update-all-packages-stderr)"; then
+        "$@" 2>>"$LOG_FILE"
+        return $?
+    fi
+
+    local command_status=0
+    "$@" 2>"$stderr_file" || command_status=$?
+    if [ -s "$stderr_file" ]; then
+        cat "$stderr_file" >> "$LOG_FILE" 2>/dev/null || true
+    fi
+    rm -f "$stderr_file"
+    return "$command_status"
+}
+
 is_data_saver_active() {
     # Check if Low Data Mode is enabled via the macOS Network framework.
     # Returns 0 (true) if constrained/Low Data Mode, 1 (false) otherwise.
@@ -290,7 +321,7 @@ kill_process_tree() {
 }
 
 # Runs a command with a wall-clock limit. Output passes through untouched; exit status 124 means it timed out
-# (the timeout notice goes to stderr so callers that merge 2>&1 into tee capture it). Uses gtimeout/timeout
+# (the timeout notice goes to stderr so callers that merge 2>&1 into tee_to_log capture it). Uses gtimeout/timeout
 # when present, otherwise a polling watchdog that kills the command and all its descendants.
 # Seconds of 0 or a non-number runs the command without a limit.
 run_with_timeout() {
@@ -360,7 +391,7 @@ run_logged_with_timeout() {
     local timeout_seconds="$1"
     shift
 
-    run_with_timeout "$timeout_seconds" "$@" 2>&1 | tee -a "$LOG_FILE"
+    run_with_timeout "$timeout_seconds" "$@" 2>&1 | tee_to_log
     return "${PIPESTATUS[0]}"
 }
 
@@ -497,7 +528,7 @@ update_claude_code() {
     log "Info" "============================================================"
 
     local current_version=""
-    current_version="$("$CLAUDE_CODE_BINARY" --version 2>>"$LOG_FILE")" || true
+    current_version="$(run_with_stderr_logged "$CLAUDE_CODE_BINARY" --version)" || true
     if [ -n "$current_version" ]; then
         current_version="${current_version%%$'\n'*}"
         log "Info" "Current Claude Code: $current_version"
@@ -517,7 +548,7 @@ update_claude_code() {
     fi
 
     local updated_version=""
-    if ! updated_version="$("$CLAUDE_CODE_BINARY" --version 2>>"$LOG_FILE")" || [ -z "$updated_version" ]; then
+    if ! updated_version="$(run_with_stderr_logged "$CLAUDE_CODE_BINARY" --version)" || [ -z "$updated_version" ]; then
         CLAUDE_CODE_STATUS="Warning"
         log "Warning" "Claude Code updated, but version verification failed."
         return 1
@@ -640,7 +671,7 @@ update_macupdater_apps() {
         return
     }
 
-    if ! run_with_timeout "$MACUPDATER_SCAN_TIMEOUT_SECONDS" "$MACUPDATER_CLIENT" list --hide-uptodate-apps --hide-mas-apps --json --quiet > "$list_file" 2>>"$LOG_FILE"; then
+    if ! run_with_stderr_logged run_with_timeout "$MACUPDATER_SCAN_TIMEOUT_SECONDS" "$MACUPDATER_CLIENT" list --hide-uptodate-apps --hide-mas-apps --json --quiet > "$list_file"; then
         MACUPDATER_STATUS="Warning"
         log "Warning" "MacUpdater app list failed or timed out."
         rm -f "$list_file"
@@ -648,7 +679,7 @@ update_macupdater_apps() {
     fi
 
     local app_counts
-    if ! app_counts="$(python3 - "$list_file" 2>>"$LOG_FILE" <<'PY'
+    if ! app_counts="$(run_with_stderr_logged python3 - "$list_file" <<'PY'
 import json
 import sys
 
@@ -735,7 +766,7 @@ PY
         return
     }
 
-    if ! python3 - "$list_file" > "$updates_file" 2>>"$LOG_FILE" <<'PY'
+    if ! run_with_stderr_logged python3 - "$list_file" > "$updates_file" <<'PY'
 import json
 import sys
 
@@ -793,13 +824,13 @@ get_npm_installed_version() {
     local prefix="$1"
     local package_name="$2"
 
-    npm list -g --prefix "$prefix" "$package_name" --depth=0 --json 2>>"$LOG_FILE" | python3 -c '
+    run_with_stderr_logged npm list -g --prefix "$prefix" "$package_name" --depth=0 --json | run_with_stderr_logged python3 -c '
 import json
 import sys
 
 data = json.load(sys.stdin)
 print(data.get("dependencies", {}).get(sys.argv[1], {}).get("version", ""))
-' "$package_name" 2>>"$LOG_FILE"
+' "$package_name"
 }
 
 verify_npm_channel_package() {
@@ -849,7 +880,7 @@ update_npm() {
     # npm outdated exits with 1 if packages are outdated
     local outdated_json=""
     local outdated_rc=0
-    outdated_json=$(run_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" npm outdated -g --json 2>>"$LOG_FILE") || outdated_rc=$?
+    outdated_json=$(run_with_stderr_logged run_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" npm outdated -g --json) || outdated_rc=$?
     if [ "$outdated_rc" -eq 124 ]; then
         NPM_STATUS="Error"
         log "Error" "npm outdated timed out after ${UPDATE_COMMAND_TIMEOUT_SECONDS}s."
@@ -936,7 +967,7 @@ for package, versions in data.items():
 
         local channel_version=""
         local view_rc=0
-        channel_version=$(run_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" npm view "$package_spec" version 2>>"$LOG_FILE") || view_rc=$?
+        channel_version=$(run_with_stderr_logged run_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" npm view "$package_spec" version) || view_rc=$?
         if [ "$view_rc" -ne 0 ]; then
             failed=$((failed + 1))
             if [ "$view_rc" -eq 124 ]; then
@@ -1069,7 +1100,7 @@ update_rustup() {
     local check_status=0
     check_output="$(run_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" rustup check 2>&1)"
     check_status=$?
-    printf '%s\n' "$check_output" | tee -a "$LOG_FILE"
+    printf '%s\n' "$check_output" | tee_to_log
 
     if [ "$check_status" -eq 124 ]; then
         RUSTUP_STATUS="Error"
@@ -1138,7 +1169,7 @@ show_summary() {
     local summary_message
     local status
 
-    printf '%s\n' "${summary_lines[@]}" | tee -a "$LOG_FILE"
+    printf '%s\n' "${summary_lines[@]}" | tee_to_log
     summary_message="$(printf '%s\n' "${summary_lines[@]}")"
 
     for status in "${statuses[@]}"; do
@@ -1227,7 +1258,7 @@ write_last_run_json() {
     esac
     source_sha256="$(file_sha256 "$source_path" 2>/dev/null)" || source_sha256=""
 
-    if ! python3 - "$output_path" "$SCRIPT_NAME" "$MACHINE_NAME" "$started_utc" "$completed_utc" \
+    if ! run_with_stderr_logged python3 - "$output_path" "$SCRIPT_NAME" "$MACHINE_NAME" "$started_utc" "$completed_utc" \
         "$exit_code" "$outcome" "$LOG_FILE" "$source_path" "$source_sha256" \
         "Brew" "$BREW_STATUS" "$BREW_MESSAGE" \
         "Mas" "$MAS_STATUS" "$MAS_MESSAGE" \
@@ -1239,7 +1270,7 @@ write_last_run_json() {
         "Pipx" "$PIPX_STATUS" "$PIPX_MESSAGE" \
         "Rustup" "$RUSTUP_STATUS" "$RUSTUP_MESSAGE" \
         "LogCleanup" "$LOG_CLEANUP_STATUS" "$LOG_CLEANUP_MESSAGE" \
-        2>>"$LOG_FILE" <<'PY'
+        <<'PY'
 import json
 import os
 import sys

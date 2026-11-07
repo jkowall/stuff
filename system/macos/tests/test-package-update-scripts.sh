@@ -407,6 +407,37 @@ test_run_with_timeout() (
     assert_contains "$LOG_FILE" "timed out after 1s"
 )
 
+# OneDrive fails writes through a log descriptor held open while it syncs the file. The log helpers must reopen
+# the log for each write: swapping the file mid-command shows whether a writer is still holding the old one.
+test_log_writes_do_not_hold_log_open() (
+    source "$UPDATER_SCRIPT"
+
+    local fixture_dir="${TEST_ROOT}/log reopen"
+    mkdir -p "$fixture_dir"
+    LOG_FILE="${fixture_dir}/updater.log"
+    : > "$LOG_FILE"
+    export LOG_FILE
+
+    local output=""
+    output="$({ echo first; mv "$LOG_FILE" "${LOG_FILE}.old"; : > "$LOG_FILE"; printf 'second'; } | tee_to_log)"
+    assert_eq "$(printf 'first\nsecond')" "$output" "tee_to_log passes output through"
+    assert_contains "${LOG_FILE}.old" "first"
+    assert_contains "$LOG_FILE" "second"
+
+    : > "$LOG_FILE"
+    local rc=0
+    output="$(run_with_stderr_logged bash -c 'echo out; echo err1 >&2; mv "$1" "$1.old2"; : > "$1"; echo err2 >&2; exit 5' _ "$LOG_FILE")" || rc=$?
+    assert_eq "5" "$rc" "run_with_stderr_logged keeps exit status"
+    assert_eq "out" "$output" "run_with_stderr_logged leaves stdout alone"
+    assert_contains "$LOG_FILE" "err1"
+    assert_contains "$LOG_FILE" "err2"
+
+    : > "$LOG_FILE"
+    RUN_WITH_TIMEOUT_FORCE_PORTABLE=1
+    run_logged_with_timeout 5 bash -c 'echo one; mv "$1" "$1.old3"; : > "$1"; echo two >&2' _ "$LOG_FILE" </dev/null >/dev/null
+    assert_contains "$LOG_FILE" "two"
+)
+
 test_phase_timeout_sets_error_status() (
     source "$UPDATER_SCRIPT"
 
@@ -722,6 +753,8 @@ test_host_scoped_log_retention
 printf 'PASS: host-scoped path-safe log retention\n'
 test_run_with_timeout
 printf 'PASS: timeout helper (native and portable paths)\n'
+test_log_writes_do_not_hold_log_open
+printf 'PASS: log writes reopen the log file (OneDrive-safe)\n'
 test_phase_timeout_sets_error_status
 test_mas_skipped_without_sudo
 printf 'PASS: timed-out phase reports Error\n'
