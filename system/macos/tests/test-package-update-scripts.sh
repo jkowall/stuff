@@ -438,6 +438,63 @@ test_log_writes_do_not_hold_log_open() (
     assert_contains "$LOG_FILE" "two"
 )
 
+# Casks upgrade one at a time; stale records are skipped with a warning and apps that already updated themselves
+# are not reinstalled. brew is a stub that records the commands it receives.
+test_brew_cask_upgrades() (
+    source "$UPDATER_SCRIPT"
+
+    local fixture_dir="${TEST_ROOT}/brew casks"
+    local app_dir="${fixture_dir}/Applications"
+    local bin_dir="${fixture_dir}/bin"
+    mkdir -p "$app_dir" "$bin_dir"
+    LOG_FILE="${fixture_dir}/updater.log"
+    : > "$LOG_FILE"
+    BREW_CASK_APP_DIRS="$app_dir"
+
+    local name=""
+    local version=""
+    for name in Old:1.0 SelfUpdated:2.0 Stuck:1.0; do
+        version="${name#*:}"
+        name="${name%%:*}"
+        mkdir -p "${app_dir}/${name}.app/Contents"
+        python3 -c 'import plistlib,sys; p=sys.argv[1]; plistlib.dump({"CFBundleShortVersionString": sys.argv[2]}, open(p, "wb"))' \
+            "${app_dir}/${name}.app/Contents/Info.plist" "$version"
+    done
+
+    cat > "${bin_dir}/brew" <<'BREW'
+#!/bin/bash
+printf '%s\n' "$*" >> "${BREW_CALLS}"
+case "$*" in
+    "outdated --cask --greedy-auto-updates --json=v2")
+        printf '%s' '{"casks":[{"name":"old","installed_versions":["1.0"],"current_version":"2.0,abc"},{"name":"selfupdated","installed_versions":["1.0"],"current_version":"2.0"},{"name":"gone","installed_versions":["1.0"],"current_version":"2.0"},{"name":"stuck","installed_versions":["1.0"],"current_version":"2.0"}]}' ;;
+    "info --cask --installed --json=v2")
+        printf '%s' '{"casks":[{"token":"old","artifacts":[{"app":["Old.app"]}]},{"token":"selfupdated","artifacts":[{"app":[{"target":"SelfUpdated.app"}]}]},{"token":"gone","artifacts":[{"app":["Gone.app"]}]},{"token":"stuck","artifacts":[{"app":["Stuck.app"]}]},{"token":"pkgonly","artifacts":[{"pkg":["x.pkg"]}]}]}' ;;
+    "upgrade --cask --greedy-auto-updates stuck") sleep 30 ;;
+    "upgrade --cask --greedy-auto-updates old") echo "upgraded old" ;;
+esac
+BREW
+    chmod +x "${bin_dir}/brew"
+    export BREW_CALLS="${fixture_dir}/calls"
+    : > "$BREW_CALLS"
+    PATH="${bin_dir}:${PATH}"
+    BREW_CASK_UPGRADE_TIMEOUT_SECONDS=1
+    RUN_WITH_TIMEOUT_KILL_GRACE_SECONDS=1
+
+    local rc=0
+    upgrade_brew_casks </dev/null >/dev/null 2>&1 || rc=$?
+    assert_eq "2" "$rc" "A timed-out cask upgrade reports a timeout"
+    assert_contains "$BREW_CALLS" "upgrade --cask --greedy-auto-updates old"
+    assert_contains "$BREW_CALLS" "upgrade --cask --greedy-auto-updates stuck"
+    assert_not_contains "$BREW_CALLS" "upgrade --cask --greedy-auto-updates selfupdated"
+    assert_not_contains "$BREW_CALLS" "upgrade --cask --greedy-auto-updates gone"
+    assert_not_contains "$LOG_FILE" "pkgonly"
+    assert_contains "$LOG_FILE" "upgraded old"
+    assert_contains "$LOG_FILE" "brew uninstall --cask gone"
+    assert_contains "$LOG_FILE" "Cask selfupdated is already 2.0 through its own updater"
+    assert_contains "$LOG_FILE" "Cask stuck upgrade timed out after 1s"
+    assert_contains "$LOG_FILE" "1 upgraded, 1 failed"
+)
+
 test_phase_timeout_sets_error_status() (
     source "$UPDATER_SCRIPT"
 
@@ -627,6 +684,7 @@ test_last_run_json() (
     RUSTUP_MESSAGE="ok"
     LOG_CLEANUP_STATUS="Success"
     LOG_CLEANUP_MESSAGE="ok"
+    MACUPDATER_MANUAL_ENTRIES=$'VMware Fusion\t26.0.0\t26.0.1\t/Applications/VMware Fusion.app\tUpdate it from the vendor.\n'
 
     local json_path="${LOG_DIR}/Update-AllPackages_Mac_host-a.local_last-run.json"
     write_last_run_json 2 "2026-10-03T09:46:13Z" "2026-10-03T09:46:39Z"
@@ -663,6 +721,10 @@ assert list(data["phases"]) == [
 assert data["phases"]["Brew"] == {"status": "Success", "message": os.environ["EXPECTED_BREW_MESSAGE"]}
 assert data["phases"]["Npm"] == {"status": "Warning", "message": os.environ["EXPECTED_NPM_MESSAGE"]}
 assert data["phases"]["Mas"] == {"status": "Skipped", "message": ""}
+assert data["manualUpdates"] == [{
+    "name": "VMware Fusion", "installedVersion": "26.0.0", "newestVersion": "26.0.1",
+    "path": "/Applications/VMware Fusion.app", "hint": "Update it from the vendor.",
+}]
 PY
 
     local code=""
@@ -755,6 +817,8 @@ test_run_with_timeout
 printf 'PASS: timeout helper (native and portable paths)\n'
 test_log_writes_do_not_hold_log_open
 printf 'PASS: log writes reopen the log file (OneDrive-safe)\n'
+test_brew_cask_upgrades
+printf 'PASS: per-cask greedy upgrades skip stale and self-updated apps\n'
 test_phase_timeout_sets_error_status
 test_mas_skipped_without_sudo
 printf 'PASS: timed-out phase reports Error\n'

@@ -16,6 +16,7 @@ set -o pipefail
 # launchd provides a minimal PATH, so include common package manager locations.
 # Keep channel-managed CLIs outside Homebrew so formula/cask upgrades cannot replace them.
 NPM_CHANNEL_PREFIX="${HOME}/.local"
+export HOMEBREW_NO_ENV_HINTS=1
 export PATH="${NPM_CHANNEL_PREFIX}/bin:/opt/homebrew/opt/node@24/bin:/usr/local/opt/node@24/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -40,6 +41,8 @@ BREW_UPDATE_RETRY_DELAY_SECONDS=15
 # UPDATE_COMMAND_TIMEOUT_SECONDS applies to every external update command; a set value also governs brew upgrade.
 BREW_UPGRADE_TIMEOUT_SECONDS="${BREW_UPGRADE_TIMEOUT_SECONDS:-${UPDATE_COMMAND_TIMEOUT_SECONDS:-7200}}"
 UPDATE_COMMAND_TIMEOUT_SECONDS="${UPDATE_COMMAND_TIMEOUT_SECONDS:-1800}"
+# Each cask upgrades separately, so one stuck installer cannot use up the whole brew upgrade budget.
+BREW_CASK_UPGRADE_TIMEOUT_SECONDS="${BREW_CASK_UPGRADE_TIMEOUT_SECONDS:-1200}"
 RUN_WITH_TIMEOUT_KILL_GRACE_SECONDS=10
 UPDATE_LOCK_FILE="/tmp/${SCRIPT_NAME}.${UID}.lock"
 NPM_GENERIC_ALLOWED_SCRIPTS="@github/keytar,node-pty"
@@ -82,6 +85,9 @@ PIPX_STATUS="Skipped"
 RUSTUP_STATUS="Skipped"
 LOG_CLEANUP_STATUS="Skipped"
 
+# Outdated apps MacUpdater cannot update: one "name<TAB>installed<TAB>newest<TAB>path<TAB>hint" line each.
+MACUPDATER_MANUAL_COUNT=0
+MACUPDATER_MANUAL_ENTRIES=""
 # Per-phase summary text for the last-run JSON, filled by run_phase.
 BREW_MESSAGE=""
 MAS_MESSAGE=""
@@ -434,6 +440,137 @@ acquire_update_lock() {
     esac
 }
 
+# Prints one tab-separated line per installed cask that needs attention:
+#   stale    <token>  <app names>                 Homebrew records it, but its app is gone (removed by hand)
+#   current  <token>  <app version>               outdated per Homebrew, but the app already updated itself
+#   upgrade  <token>  <installed> <latest>        upgrade it
+# Arguments: `brew outdated --cask --greedy-auto-updates --json=v2` file, `brew info --cask --installed --json=v2` file.
+plan_brew_cask_upgrades() {
+    python3 - "$1" "$2" "${BREW_CASK_APP_DIRS:-/Applications:${HOME}/Applications}" <<'PY'
+import json
+import os
+import plistlib
+import sys
+
+outdated_path, info_path, app_dirs = sys.argv[1], sys.argv[2], sys.argv[3].split(":")
+with open(outdated_path, encoding="utf-8") as f:
+    outdated = json.load(f).get("casks", [])
+with open(info_path, encoding="utf-8") as f:
+    installed = json.load(f).get("casks", [])
+
+
+def app_names(cask):
+    names = []
+    for artifact in cask.get("artifacts", []):
+        if not isinstance(artifact, dict):
+            continue
+        for entry in artifact.get("app", []):
+            if isinstance(entry, str):
+                names.append(os.path.basename(entry))
+            elif isinstance(entry, dict) and entry.get("target"):
+                names.append(os.path.basename(entry["target"]))
+    return names
+
+
+def find_app(name):
+    for app_dir in app_dirs:
+        path = os.path.join(app_dir, name)
+        if os.path.isdir(path):
+            return path
+    return None
+
+
+def bundle_version(path):
+    try:
+        with open(os.path.join(path, "Contents", "Info.plist"), "rb") as f:
+            return str(plistlib.load(f).get("CFBundleShortVersionString") or "")
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return ""
+
+
+apps_by_token = {cask.get("token"): app_names(cask) for cask in installed}
+stale = set()
+for token, names in apps_by_token.items():
+    if names and not any(find_app(name) for name in names):
+        stale.add(token)
+        print("\t".join(["stale", token, ", ".join(names)]))
+
+for cask in outdated:
+    token = cask.get("name") or cask.get("token") or ""
+    if not token or token in stale:
+        continue
+    latest = str(cask.get("current_version") or "")
+    installed_versions = cask.get("installed_versions") or [""]
+    names = apps_by_token.get(token, [])
+    paths = [p for p in (find_app(n) for n in names) if p]
+    app_version = bundle_version(paths[0]) if paths else ""
+    if app_version and app_version == latest.split(",")[0]:
+        print("\t".join(["current", token, app_version]))
+        continue
+    print("\t".join(["upgrade", token, str(installed_versions[-1]).split(",")[0], latest.split(",")[0]]))
+PY
+}
+
+# Casks upgrade one at a time with their own limit, so one stuck installer (or one waiting on a dialog) is named in
+# the log and cannot hold up the rest. --greedy-auto-updates includes apps that have their own updater, because those
+# updaters stall (Brave fell five major versions behind while Homebrew skipped it).
+# Returns 0 when clean, 1 for warnings (failed upgrades, stale casks), 2 when an upgrade timed out.
+upgrade_brew_casks() {
+    local outdated_file=""
+    local info_file=""
+    outdated_file="$(mktemp "${TMPDIR:-/tmp}/brew-outdated.XXXXXX")" || return 1
+    info_file="$(mktemp "${TMPDIR:-/tmp}/brew-info.XXXXXX")" || { rm -f "$outdated_file"; return 1; }
+
+    local plan=""
+    if ! run_with_stderr_logged run_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" brew outdated --cask --greedy-auto-updates --json=v2 > "$outdated_file" ||
+        ! run_with_stderr_logged run_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" brew info --cask --installed --json=v2 > "$info_file" ||
+        ! plan="$(run_with_stderr_logged plan_brew_cask_upgrades "$outdated_file" "$info_file")"; then
+        rm -f "$outdated_file" "$info_file"
+        log "Warning" "Unable to work out which Homebrew casks need upgrading."
+        return 1
+    fi
+    rm -f "$outdated_file" "$info_file"
+
+    local result=0
+    local upgraded=0
+    local failed=0
+    local action=""
+    local token=""
+    local detail=""
+    local latest=""
+    local cask_rc=0
+    while IFS=$'\t' read -r action token detail latest; do
+        case "$action" in
+            stale)
+                result=$(( result > 1 ? result : 1 ))
+                log "Warning" "Homebrew still records cask '${token}', but ${detail} is gone. Not upgrading it; remove the record with: brew uninstall --cask ${token}"
+                ;;
+            current)
+                log "Info" "Cask ${token} is already ${detail} through its own updater. Skipping."
+                ;;
+            upgrade)
+                log "Info" "Running: brew upgrade --cask --greedy-auto-updates ${token} (${detail} -> ${latest})"
+                cask_rc=0
+                run_logged_with_timeout "$BREW_CASK_UPGRADE_TIMEOUT_SECONDS" brew upgrade --cask --greedy-auto-updates "$token" || cask_rc=$?
+                if [ "$cask_rc" -eq 0 ]; then
+                    upgraded=$((upgraded + 1))
+                elif [ "$cask_rc" -eq 124 ]; then
+                    failed=$((failed + 1))
+                    result=2
+                    log "Error" "Cask ${token} upgrade timed out after ${BREW_CASK_UPGRADE_TIMEOUT_SECONDS}s."
+                else
+                    failed=$((failed + 1))
+                    result=$(( result > 1 ? result : 1 ))
+                    log "Warning" "Cask ${token} upgrade failed (it may need sudo: run the updater with --interactive)."
+                fi
+                ;;
+        esac
+    done <<< "$plan"
+
+    log "Info" "Homebrew casks: ${upgraded} upgraded, ${failed} failed."
+    return "$result"
+}
+
 update_brew() {
     if ! command -v brew >/dev/null 2>&1; then
         log "Warning" "Homebrew not found. Skipping."
@@ -482,19 +619,33 @@ update_brew() {
 
     local brew_warning=0
 
-    log "Info" "Running: brew upgrade"
+    # brew block-buffers its output into a pipe, so a hang shows nothing in the log. Record what is outdated
+    # first, so a stuck run still says which package it was working on.
+    log "Info" "Outdated Homebrew packages (casks include self-updating apps):"
+    run_logged_with_timeout "$UPDATE_COMMAND_TIMEOUT_SECONDS" brew outdated --verbose --greedy-auto-updates || true
+
+    log "Info" "Running: brew upgrade --formula"
     brew_rc=0
-    run_logged_with_timeout "$BREW_UPGRADE_TIMEOUT_SECONDS" brew upgrade || brew_rc=$?
+    run_logged_with_timeout "$BREW_UPGRADE_TIMEOUT_SECONDS" brew upgrade --formula || brew_rc=$?
     if [ "$brew_rc" -ne 0 ]; then
         if [ "$brew_rc" -eq 124 ]; then
             BREW_STATUS="Error"
-            log "Error" "Brew upgrade timed out after ${BREW_UPGRADE_TIMEOUT_SECONDS}s."
+            log "Error" "Brew formula upgrade timed out after ${BREW_UPGRADE_TIMEOUT_SECONDS}s."
         else
             BREW_STATUS="Warning"
-            log "Warning" "Brew upgrade encountered issues."
+            log "Warning" "Brew formula upgrade encountered issues."
         fi
         return
     fi
+
+    local brew_error=0
+    local cask_result=0
+    upgrade_brew_casks || cask_result=$?
+    case "$cask_result" in
+        0) ;;
+        2) brew_error=1 ;;
+        *) brew_warning=1 ;;
+    esac
 
     log "Info" "Running: brew cleanup"
     brew_rc=0
@@ -508,7 +659,10 @@ update_brew() {
         log "Warning" "Brew cleanup encountered issues."
     fi
 
-    if [ "$brew_warning" -eq 0 ]; then
+    if [ "$brew_error" -eq 1 ]; then
+        BREW_STATUS="Error"
+        log "Error" "Homebrew updates completed, but a cask upgrade timed out."
+    elif [ "$brew_warning" -eq 0 ]; then
         BREW_STATUS="Success"
         log "Success" "Homebrew updates completed successfully"
     else
@@ -645,6 +799,69 @@ update_mas() {
     fi
 }
 
+# Suggests how to get a manual MacUpdater app onto Homebrew. Cask tokens follow Homebrew's naming convention
+# ("iStat Menus" -> istat-menus); a match only counts when that cask installs the same .app.
+homebrew_hint_for_app() {
+    local app_name="$1"
+    local app_path="$2"
+    local fallback="Update it from the vendor."
+
+    if ! command -v brew >/dev/null 2>&1; then
+        printf '%s\n' "$fallback"
+        return 0
+    fi
+
+    local token=""
+    token="$(printf '%s' "$app_name" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9.+]\{1,\}/-/g' -e 's/^-//' -e 's/-$//')"
+    local info_json=""
+    if [ -z "$token" ] || ! info_json="$(HOMEBREW_NO_AUTO_UPDATE=1 run_with_timeout 60 brew info --cask --json=v2 "$token" 2>/dev/null)"; then
+        printf '%s\n' "$fallback"
+        return 0
+    fi
+
+    BREW_CASK_INFO="$info_json" python3 - "$token" "$app_path" "$fallback" <<'PY' || printf '%s\n' "$fallback"
+import json
+import os
+import plistlib
+import sys
+
+token, app_path, fallback = sys.argv[1:4]
+cask = json.loads(os.environ["BREW_CASK_INFO"])["casks"][0]
+apps = []
+for artifact in cask.get("artifacts", []):
+    if isinstance(artifact, dict):
+        for entry in artifact.get("app", []):
+            target = entry if isinstance(entry, str) else (entry or {}).get("target", "")
+            if target:
+                apps.append(os.path.basename(target))
+app_file = os.path.basename(app_path)
+# .pkg-based casks list no .app, so fall back to the cask's display name.
+if app_file not in apps and os.path.splitext(app_file)[0] not in (cask.get("name") or []):
+    print(fallback)
+    sys.exit(0)
+
+latest = str(cask.get("version") or "").split(",")[0]
+recorded = str(cask.get("installed") or "").split(",")[0]
+if not recorded:
+    print(f"Homebrew has it: brew install --cask --force {token} replaces it with {latest} and keeps it updated.")
+    sys.exit(0)
+if recorded != latest:
+    print(f"Managed by Homebrew cask {token}; the next run upgrades it to {latest}.")
+    sys.exit(0)
+
+try:
+    with open(os.path.join(app_path, "Contents", "Info.plist"), "rb") as f:
+        app_version = str(plistlib.load(f).get("CFBundleShortVersionString") or "")
+except (OSError, plistlib.InvalidFileException, ValueError):
+    app_version = ""
+if app_version and app_version != latest:
+    # Usually an app adopted into Homebrew at an old version: Homebrew believes it is current.
+    print(f"Homebrew cask {token} lists {latest} but the app is {app_version}; run: brew reinstall --cask {token}")
+else:
+    print(f"Managed by Homebrew cask {token}, which does not have this version yet.")
+PY
+}
+
 update_macupdater_apps() {
     if [ ! -x "$MACUPDATER_CLIENT" ]; then
         log "Info" "MacUpdater CLI not found. Skipping."
@@ -718,9 +935,13 @@ PY
         return
     fi
 
+    MACUPDATER_MANUAL_COUNT="$manual_count"
+    MACUPDATER_MANUAL_ENTRIES=""
     if [ "$manual_count" -gt 0 ]; then
         log "Warning" "MacUpdater found $manual_count outdated non-auto-updatable app(s) that need manual or vendor-specific updates."
-        python3 - "$list_file" <<'PY' | while IFS=$'\t' read -r app_name installed_version newest_version app_path; do
+        local manual_lines=""
+        local manual_hint=""
+        manual_lines="$(python3 - "$list_file" <<'PY'
 import json
 import sys
 
@@ -736,8 +957,13 @@ for app in data.get("apps", []):
             str(app.get("installed_path") or ""),
         ]))
 PY
-            log "Warning" "Manual MacUpdater update remains: ${app_name} (${installed_version} -> ${newest_version}) at ${app_path}"
-        done
+)" || manual_lines=""
+        while IFS=$'\t' read -r app_name installed_version newest_version app_path; do
+            [ -n "$app_name" ] || continue
+            manual_hint="$(homebrew_hint_for_app "$app_name" "$app_path")"
+            log "Warning" "Manual MacUpdater update remains: ${app_name} (${installed_version} -> ${newest_version}) at ${app_path}. ${manual_hint}"
+            MACUPDATER_MANUAL_ENTRIES+="${app_name}"$'\t'"${installed_version}"$'\t'"${newest_version}"$'\t'"${app_path}"$'\t'"${manual_hint}"$'\n'
+        done <<< "$manual_lines"
     fi
 
     if [ "$app_count" -eq 0 ]; then
@@ -1169,6 +1395,10 @@ show_summary() {
     local summary_message
     local status
 
+    if [ "$MACUPDATER_MANUAL_COUNT" -gt 0 ] 2>/dev/null; then
+        summary_lines+=("Manual app updates: $MACUPDATER_MANUAL_COUNT (see log)")
+    fi
+
     printf '%s\n' "${summary_lines[@]}" | tee_to_log
     summary_message="$(printf '%s\n' "${summary_lines[@]}")"
 
@@ -1258,7 +1488,7 @@ write_last_run_json() {
     esac
     source_sha256="$(file_sha256 "$source_path" 2>/dev/null)" || source_sha256=""
 
-    if ! run_with_stderr_logged python3 - "$output_path" "$SCRIPT_NAME" "$MACHINE_NAME" "$started_utc" "$completed_utc" \
+    if ! MACUPDATER_MANUAL_ENTRIES="$MACUPDATER_MANUAL_ENTRIES" run_with_stderr_logged python3 - "$output_path" "$SCRIPT_NAME" "$MACHINE_NAME" "$started_utc" "$completed_utc" \
         "$exit_code" "$outcome" "$LOG_FILE" "$source_path" "$source_sha256" \
         "Brew" "$BREW_STATUS" "$BREW_MESSAGE" \
         "Mas" "$MAS_STATUS" "$MAS_MESSAGE" \
@@ -1294,6 +1524,11 @@ document = {
         phase_args[i]: {"status": phase_args[i + 1], "message": phase_args[i + 2]}
         for i in range(0, len(phase_args), 3)
     },
+    "manualUpdates": [
+        dict(zip(("name", "installedVersion", "newestVersion", "path", "hint"), line.split("\t")))
+        for line in os.environ.get("MACUPDATER_MANUAL_ENTRIES", "").splitlines()
+        if line.count("\t") == 4
+    ],
 }
 
 temp_path = path + ".tmp"
