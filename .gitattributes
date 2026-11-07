@@ -1,0 +1,6 @@
+# Store text with LF in git; Windows checkouts and OneDrive syncs may use CRLF without showing as changed.
+*.ps1 text
+*.psm1 text
+*.psd1 text
+# Shell scripts must stay LF on every platform.
+*.sh text eol=lf
