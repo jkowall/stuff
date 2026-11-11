@@ -62,6 +62,7 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 - **`system/windows/Toggle-PrompterDisplayAndRestartCameraHub.ps1`** - Toggles the Elgato Prompter display and restarts Camera Hub after power-off
 - **`system/macos/audit_apps.sh`** - Audits installed Mac GUI apps
 - **`system/macos/sync_apps.sh`** - Syncs Mac apps between machines
+- **`system/bypass-paywalls-updater/`** - Cross-platform extension updater with per-user macOS and Windows schedules
 - **`backup/plex_backup.ps1`** - Requires admin privileges, stops Plex services during backup
 
 ### Workflow Skill Guidelines
@@ -147,6 +148,14 @@ git config commit.gpgsign true
 │
 ├── system/                            # System Maintenance
 │   ├── README.md                      # Overview of system scripts
+│   ├── bypass-paywalls-updater/        # Shared Python extension updater
+│   │   ├── update.py                  # Validated downloads, backups, and replacement
+│   │   ├── install.py                 # macOS LaunchAgent installer
+│   │   ├── install-windows.ps1         # Windows Task Scheduler installer
+│   │   ├── Install-Windows.cmd         # One-click Windows setup
+│   │   ├── README.md                  # Setup, activation, and recovery
+│   │   ├── test_install.py            # Offline macOS installer tests
+│   │   └── test_update.py             # Offline extension updater tests
 │   ├── macos/                         # macOS scripts
 │   │   ├── audit_apps.sh              # List GUI apps and sources
 │   │   ├── sync_apps.sh               # Install missing apps from audit
@@ -176,6 +185,7 @@ git config commit.gpgsign true
 
 ## Testing Notes
 
+- Run `python3 -m unittest discover -s system/bypass-paywalls-updater -p 'test_*.py'` for offline extension updater tests.
 - Run `/bin/bash system/macos/tests/test-package-update-scripts.sh` for offline macOS updater status, retention, and launchd-rendering coverage.
 - Run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\system\windows\tests\Test-Update-AllPackages_Win.ps1` for offline Windows parser, status-record, and scheduler-rendering coverage.
 - `backup/plex_backup.ps1` requires Plex to be installed and admin rights

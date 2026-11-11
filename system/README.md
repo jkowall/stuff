@@ -7,6 +7,23 @@ This directory contains system automation and maintenance scripts, organized by 
 - **`macos/`**: macOS-specific shell scripts.
 - **`windows/`**: Windows-specific PowerShell scripts.
 - **`linux/`**: Linux-specific shell scripts.
+- **`bypass-paywalls-updater/`**: Shared Python updater with macOS and Windows installers.
+
+## Bypass Paywalls Clean (`bypass-paywalls-updater/`)
+
+The [extension updater](bypass-paywalls-updater/README.md) downloads and validates
+the maintainer's ZIP, keeps backups, and updates a local extension folder on
+each computer. Use `Install-Windows.cmd` for Windows Task Scheduler or
+`python3 install.py` for a macOS LaunchAgent. Source files can sync through
+OneDrive; active extension files and scheduler state stay local. Python 3.9+
+is required. Chrome must reload the extension or restart to activate updates.
+
+Run its offline tests with:
+
+```sh
+cd system/bypass-paywalls-updater
+python3 -m unittest discover -v -p 'test_*.py'
+```
 
 ## macOS Scripts (`system/macos/`)
 

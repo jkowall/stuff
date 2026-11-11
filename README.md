@@ -40,6 +40,15 @@ installation instructions.
 
 The `system/` directory is organized by platform: `macos/`, `windows/`, and `linux/`.
 
+#### Cross-platform extension updater
+
+[`system/bypass-paywalls-updater/`](system/bypass-paywalls-updater/README.md) keeps
+Bypass Paywalls Clean current on macOS and Windows. Each computer uses its own
+local extension folder and daily schedule; the source can sync through OneDrive.
+Run `Install-Windows.cmd` on Windows or `python3 install.py` on macOS, then load
+the local folder in Chrome once. Python 3.9+ is required. Reload the extension
+or restart Chrome after subsequent file updates.
+
 #### macOS (`system/macos/`)
 
 | Script | Description |
