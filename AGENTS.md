@@ -49,6 +49,7 @@ All sensitive JSON config files are now stored in a dedicated **Private reposito
 | `CLAUDE.md` | Claude Code entry point; defers to AGENTS.md |
 | `GEMINI.md` | Gemini entry point; defers to AGENTS.md |
 | `LLM_Instructions.md` | Public-safe professional identity and working preferences for AI services |
+| `system/macos/AI-Profiles.md` | Work and personal Claude/Codex profiles, launchers, and `ccu` usage-tracking coverage. Read before changing `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, Stop hooks, or `com.claude-usage.*` LaunchAgents. Keep emails, UUIDs, endpoints and tokens out of it. |
 
 ### Key Scripts
 
@@ -157,6 +158,7 @@ git config commit.gpgsign true
 │   │   ├── test_install.py            # Offline macOS installer tests
 │   │   └── test_update.py             # Offline extension updater tests
 │   ├── macos/                         # macOS scripts
+│   │   ├── AI-Profiles.md             # Work/personal Claude and Codex profiles + ccu coverage
 │   │   ├── audit_apps.sh              # List GUI apps and sources
 │   │   ├── sync_apps.sh               # Install missing apps from audit
 │   │   ├── Update-AllPackages_Mac.sh  # macOS package updater
@@ -180,7 +182,8 @@ git config commit.gpgsign true
 ├── media/                             # Media Processing
 │   ├── Convert-Mp4ToIg.ps1           # Instagram video converter
 │   ├── instagram.ps1                 # Instagram re-encoder
-│   └── download.ps1                  # YouTube/SoundCloud downloader
+│   ├── download.ps1                  # YouTube/SoundCloud downloader
+│   └── push-torrents.sh              # Send .torrent files to seedbox watch dir, then delete
 ```
 
 ## Testing Notes

@@ -11,6 +11,7 @@ A collection of PowerShell and shell scripts for system automation, backup, and 
 | [`backup/README.md`](backup/README.md) | Detailed backup and sync workflow documentation |
 | [`skills/README.md`](skills/README.md) | Workflow skill catalog, safety model, and installation instructions |
 | [`LLM_Instructions.md`](LLM_Instructions.md) | Public-safe professional identity and working preferences for AI services |
+| [`system/macos/AI-Profiles.md`](system/macos/AI-Profiles.md) | Work and personal Claude and Codex profiles (Desktop and CLI), their launchers, and `ccu` usage-tracking coverage |
 
 ## Scripts
 
@@ -120,6 +121,7 @@ The Cloudflare dynamic DNS updater can install or remove its own daily Windows T
 | [`Convert-Mp4ToIg.ps1`](media/Convert-Mp4ToIg.ps1) | Batch converts MP4 files for Instagram (1080x1350 portrait format) using FFmpeg. |
 | [`instagram.ps1`](media/instagram.ps1) | Re-encodes videos for Instagram in a directory using FFmpeg. |
 | [`download.ps1`](media/download.ps1) | Downloads media from YouTube or SoundCloud using yt-dlp and scdl. |
+| [`push-torrents.sh`](media/push-torrents.sh) | Copies `.torrent` files (default `~/Downloads`) to a seedbox watch directory over `scp`, then deletes only the files that were sent. Destination defaults to `shell:watch/`; override with `PUSH_TORRENTS_DEST`. |
 
 ## Configuration
 

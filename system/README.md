@@ -35,6 +35,8 @@ python3 -m unittest discover -v -p 'test_*.py'
 | `Setup-PackageUpdateTasks_Mac.sh` | Installs/removes the macOS weekly launchd job for updates. A login catch-up job runs it at login if the last run started over 7 days ago (Mac was off). The cached copy refreshes itself from OneDrive, else GitHub. |
 | `tests/test-package-update-scripts.sh` | Dependency-free offline regression tests for updater status, Claude Code handling, host-scoped log retention, and launchd rendering. |
 
+[`AI-Profiles.md`](macos/AI-Profiles.md) documents how work and personal Claude and Codex instances (Desktop and CLI) run side by side, and how `ccu` attributes and syncs their usage.
+
 For the freshest Claude Code releases, migrate once to Anthropic's native `latest` installation with `claude install latest`. The scheduled updater then runs `~/.local/bin/claude update` and verifies the resulting version. Claude Desktop is separate: direct installations use Anthropic's built-in auto-updater, while a Homebrew-managed `claude` cask is upgraded through Homebrew.
 
 ## Windows Scripts (`system/windows/`)
