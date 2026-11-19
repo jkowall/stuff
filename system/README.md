@@ -8,6 +8,7 @@ This directory contains system automation and maintenance scripts, organized by 
 - **`windows/`**: Windows-specific PowerShell scripts.
 - **`linux/`**: Linux-specific shell scripts.
 - **`bypass-paywalls-updater/`**: Shared Python updater with macOS and Windows installers.
+- **[`home-assistant/`](home-assistant/README.md)**: Home Assistant and SPAN Panel setup, energy dashboards, and verification.
 
 ## Bypass Paywalls Clean (`bypass-paywalls-updater/`)
 
